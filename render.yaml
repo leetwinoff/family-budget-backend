@@ -1,0 +1,38 @@
+services:
+  # Django REST API
+  - type: web
+    name: family-budget-api
+    runtime: python
+    plan: free
+    buildCommand: "./build.sh"
+    startCommand: "gunicorn config.wsgi:application --bind 0.0.0.0:$PORT --workers 2 --timeout 60"
+    envVars:
+      - key: DEBUG
+        value: "False"
+      - key: SECRET_KEY
+        generateValue: true
+      - key: FRONTEND_URL
+        value: "https://family-budget-app-d512e.web.app"
+      - key: CORS_ALLOWED_ORIGINS
+        value: "https://family-budget-app-d512e.web.app"
+      # Set these manually in Render dashboard after deploy:
+      - key: DATABASE_URL
+        sync: false
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: EXCHANGE_RATE_API_KEY
+        sync: false
+
+  # Telegram Bot (background worker)
+  - type: worker
+    name: family-budget-bot
+    runtime: python
+    plan: free
+    buildCommand: "pip install -r requirements.txt"
+    startCommand: "python -m bot.main"
+    envVars:
+      - key: FRONTEND_URL
+        value: "https://family-budget-app-d512e.web.app"
+      # Set these manually in Render dashboard after deploy:
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
