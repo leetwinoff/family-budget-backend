@@ -34,8 +34,24 @@ from .services import (
 # Helpers
 # ---------------------------------------------------------------------------
 
+def _get_effective_chat_id(request) -> int:
+    """
+    Determine chat_id for the current request.
+    X-Chat-Id header takes precedence — the bot embeds the group chat_id in the
+    WebApp URL because Telegram omits `chat` from initData for WebApp button launches.
+    Falls back to initData-based lookup (group via attachment menu, or personal budget).
+    """
+    header_val = request.headers.get('X-Chat-Id', '').strip()
+    if header_val:
+        try:
+            return int(header_val)
+        except ValueError:
+            pass
+    return get_chat_id(request.telegram_data)
+
+
 def _get_budget(request) -> Budget:
-    chat_id = get_chat_id(request.telegram_data)
+    chat_id = _get_effective_chat_id(request)
     return Budget.objects.get(chat_id=chat_id)
 
 
@@ -74,7 +90,7 @@ class InitView(APIView):
     """
 
     def post(self, request):
-        chat_id = get_chat_id(request.telegram_data)
+        chat_id = _get_effective_chat_id(request)
         base_currency = request.data.get('base_currency', 'USD').upper()
 
         budget, created = Budget.objects.get_or_create(

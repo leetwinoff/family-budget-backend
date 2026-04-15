@@ -81,6 +81,7 @@ CORS_ALLOW_HEADERS = [
     'accept',
     'content-type',
     'x-telegram-init-data',
+    'x-chat-id',
 ]
 
 # Telegram

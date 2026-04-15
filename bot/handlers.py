@@ -37,18 +37,24 @@ BUTTON_TEXT = {
 
 SHARE_TEXT = {
     'en': (
-        "🔗 *Share your budget*\n\n"
-        "Send this link to the person you want to share your budget with.\n"
-        "Once they tap it, you'll both see the same transactions.\n\n"
-        "{link}\n\n"
-        "_Link is valid for 7 days._"
+        "👥 <b>How to share a budget</b>\n\n"
+        "A shared budget belongs to a group chat — everyone in the group sees the same transactions.\n\n"
+        "To set it up:\n"
+        "1. Create a new Telegram group (or use an existing one)\n"
+        "2. Add the people you want to share the budget with\n"
+        "3. Add <b>@{bot_username}</b> to the group\n"
+        "4. Open the app from that group — your shared budget is ready\n\n"
+        "<i>Each group has its own independent budget.</i>"
     ),
     'ru': (
-        "🔗 *Поделиться бюджетом*\n\n"
-        "Отправьте эту ссылку человеку, с которым хотите вести общий бюджет.\n"
-        "После перехода по ней вы оба будете видеть одни и те же транзакции.\n\n"
-        "{link}\n\n"
-        "_Ссылка действительна 7 дней._"
+        "👥 <b>Как поделиться бюджетом</b>\n\n"
+        "Общий бюджет привязан к групповому чату — все участники группы видят одни и те же транзакции.\n\n"
+        "Как настроить:\n"
+        "1. Создайте новую группу в Telegram (или используйте существующую)\n"
+        "2. Добавьте людей, с которыми хотите вести общий бюджет\n"
+        "3. Добавьте <b>@{bot_username}</b> в группу\n"
+        "4. Откройте приложение из этой группы — общий бюджет готов\n\n"
+        "<i>У каждой группы свой независимый бюджет.</i>"
     ),
 }
 
@@ -86,12 +92,13 @@ def _get_lang(user) -> str:
     return 'en'
 
 
-def _build_keyboard(lang: str) -> InlineKeyboardMarkup:
+def _build_keyboard(lang: str, chat_id: int | None = None) -> InlineKeyboardMarkup:
     frontend_url = os.environ.get('FRONTEND_URL', '')
+    url = f'{frontend_url}?chat_id={chat_id}' if chat_id else frontend_url
     return InlineKeyboardMarkup([[
         InlineKeyboardButton(
             text=BUTTON_TEXT[lang],
-            web_app=WebAppInfo(url=frontend_url),
+            web_app=WebAppInfo(url=url),
         )
     ]])
 
@@ -118,9 +125,13 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
 
     lang = _get_lang(update.effective_user)
+    chat = update.effective_chat
+    # For group chats encode the chat_id in the URL so the Mini App
+    # knows which budget to open (initData doesn't include chat for WebApp buttons)
+    chat_id = chat.id if chat.type in ('group', 'supergroup') else None
     await update.message.reply_text(
         text=WELCOME_TEXT[lang],
-        reply_markup=_build_keyboard(lang),
+        reply_markup=_build_keyboard(lang, chat_id=chat_id),
         parse_mode='Markdown',
     )
 
@@ -130,46 +141,12 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 # ---------------------------------------------------------------------------
 
 async def cmd_share(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Generate a shareable invite link for the current user's budget."""
-    user = update.effective_user
-    lang = _get_lang(user)
-
-    # Only meaningful in private chats (group members share by being in the group)
-    if update.effective_chat.type != 'private':
-        hint = {
-            'en': "ℹ️ The /share command works in private chat with the bot. Open a DM and try again.",
-            'ru': "ℹ️ Команда /share работает в личном чате с ботом. Откройте личные сообщения и попробуйте снова.",
-        }
-        await update.message.reply_text(hint[lang])
-        return
-
+    """Explain how to set up a shared group budget."""
+    lang = _get_lang(update.effective_user)
     bot_me = await context.bot.get_me()
-    bot_username = bot_me.username
-
-    try:
-        async with httpx.AsyncClient(timeout=15) as client:
-            resp = await client.post(
-                f'{_api_url()}/api/bot/invite',
-                json={'user_id': user.id, 'bot_username': bot_username},
-                headers={'X-Bot-Token': _bot_token()},
-            )
-        logger.info('invite response %s: %s', resp.status_code, resp.text)
-        resp.raise_for_status()
-        data = resp.json()
-    except Exception as exc:
-        logger.error('Failed to create invite for user %s: %s', user.id, exc)
-        err = {
-            'en': "⚠️ Could not generate an invite link right now. Please try again later.",
-            'ru': "⚠️ Не удалось создать ссылку. Попробуйте позже.",
-        }
-        await update.message.reply_text(err[lang])
-        return
-
-    link = data['link']
     await update.message.reply_text(
-        text=SHARE_TEXT[lang].format(link=link),
-        parse_mode='Markdown',
-        disable_web_page_preview=True,
+        text=SHARE_TEXT[lang].format(bot_username=bot_me.username),
+        parse_mode='HTML',
     )
 
 
@@ -234,7 +211,7 @@ async def on_bot_added(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         await context.bot.send_message(
             chat_id=result.chat.id,
             text=WELCOME_TEXT[lang],
-            reply_markup=_build_keyboard(lang),
+            reply_markup=_build_keyboard(lang, chat_id=result.chat.id),
             parse_mode='Markdown',
         )
     except Exception as exc:
