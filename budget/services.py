@@ -174,13 +174,24 @@ def get_chat_id(telegram_data: dict) -> int:
     """
     Extract the budget's chat_id from verified Telegram initData.
     - Group/supergroup chats: use chat.id (negative number)
-    - Private chat with bot: use user.id (positive number) as personal budget
+    - Private chat with bot: check UserBudgetLink first (shared/invited budget),
+      then fall back to user.id (personal budget)
     """
     chat = telegram_data.get('chat')
     if chat:
         return int(chat['id'])
-    user = telegram_data.get('user', {})
-    return int(user['id'])
+
+    user_id = int(telegram_data['user']['id'])
+
+    # Check if this user joined a shared budget via invite
+    try:
+        from budget.models import UserBudgetLink
+        link = UserBudgetLink.objects.select_related('budget').get(user_id=user_id)
+        return link.budget.chat_id
+    except Exception:
+        pass
+
+    return user_id
 
 
 def get_user_display_name(user: dict) -> str:

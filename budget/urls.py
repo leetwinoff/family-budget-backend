@@ -10,4 +10,7 @@ urlpatterns = [
     path('categories/<int:pk>',    views.CategoryDetailView.as_view(),   name='category-detail'),
     path('currencies',             views.CurrencyListView.as_view(),     name='currencies'),
     path('budget/currency',        views.BudgetCurrencyView.as_view(),   name='budget-currency'),
+    # Bot-internal endpoints (X-Bot-Token auth)
+    path('bot/invite',             views.BotInviteCreateView.as_view(),  name='bot-invite'),
+    path('bot/join',               views.BotInviteJoinView.as_view(),    name='bot-join'),
 ]

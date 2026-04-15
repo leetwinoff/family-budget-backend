@@ -1,13 +1,15 @@
 from datetime import date, timedelta
 from decimal import Decimal
 
+from django.conf import settings
 from django.db.models import Sum, Q
 from django.utils import timezone
+from rest_framework.permissions import BasePermission
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework import status
 
-from .models import Budget, Category, Transaction, TelegramUser
+from .models import Budget, BudgetInvite, Category, Transaction, TelegramUser, UserBudgetLink
 from .serializers import (
     BudgetSerializer,
     BalanceSerializer,
@@ -362,3 +364,107 @@ class BudgetCurrencyView(APIView):
         budget.save(update_fields=['base_currency'])
 
         return Response(BudgetSerializer(budget).data)
+
+
+# ---------------------------------------------------------------------------
+# Bot-internal endpoints (authenticated by X-Bot-Token header)
+# ---------------------------------------------------------------------------
+
+class _BotTokenPermission(BasePermission):
+    """Allow only requests that carry the bot's own token."""
+    message = 'Bot token required.'
+
+    def has_permission(self, request, view):
+        token = request.headers.get('X-Bot-Token', '')
+        return bool(token and token == settings.TELEGRAM_BOT_TOKEN)
+
+
+class BotInviteCreateView(APIView):
+    """
+    POST /api/bot/invite
+    Called by the bot when a user runs /share.
+    Creates (or returns an existing active) invite for that user's budget.
+    Returns the full t.me deep-link the bot can send to the user.
+    """
+    permission_classes = [_BotTokenPermission]
+
+    def post(self, request):
+        user_id = request.data.get('user_id')
+        bot_username = request.data.get('bot_username', '')
+
+        if not user_id:
+            return Response({'error': 'user_id required'}, status=status.HTTP_400_BAD_REQUEST)
+
+        user_id = int(user_id)
+
+        # Resolve the budget for this user (shared or personal)
+        try:
+            link = UserBudgetLink.objects.select_related('budget').get(user_id=user_id)
+            budget = link.budget
+        except UserBudgetLink.DoesNotExist:
+            budget, created = Budget.objects.get_or_create(
+                chat_id=user_id,
+                defaults={'base_currency': 'USD'},
+            )
+            if created:
+                create_default_categories(budget)
+
+        # Reuse an existing active invite if one hasn't expired yet
+        existing = BudgetInvite.objects.filter(
+            budget=budget,
+            created_by=user_id,
+            is_active=True,
+            expires_at__gt=timezone.now(),
+        ).first()
+
+        if existing:
+            invite = existing
+        else:
+            invite = BudgetInvite.objects.create(
+                budget=budget,
+                created_by=user_id,
+                expires_at=timezone.now() + timedelta(days=7),
+            )
+
+        invite_link = f'https://t.me/{bot_username}?start=join_{invite.token}'
+        return Response({'token': invite.token, 'link': invite_link})
+
+
+class BotInviteJoinView(APIView):
+    """
+    POST /api/bot/join
+    Called by the bot when a user opens a deep link: /start join_<token>
+    Links the joining user to the budget the invite belongs to.
+    """
+    permission_classes = [_BotTokenPermission]
+
+    def post(self, request):
+        user_id = request.data.get('user_id')
+        token = request.data.get('token', '')
+
+        if not user_id or not token:
+            return Response({'error': 'user_id and token required'}, status=status.HTTP_400_BAD_REQUEST)
+
+        user_id = int(user_id)
+
+        try:
+            invite = BudgetInvite.objects.select_related('budget').get(token=token, is_active=True)
+        except BudgetInvite.DoesNotExist:
+            return Response({'error': 'Invalid or expired invite link.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        if invite.expires_at < timezone.now():
+            return Response({'error': 'This invite link has expired.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        if invite.created_by == user_id:
+            return Response({'error': 'already_owner'}, status=status.HTTP_400_BAD_REQUEST)
+
+        # Link this user to the shared budget
+        UserBudgetLink.objects.update_or_create(
+            user_id=user_id,
+            defaults={'budget': invite.budget},
+        )
+
+        return Response({
+            'status': 'joined',
+            'budget_chat_id': invite.budget.chat_id,
+        })

@@ -13,7 +13,7 @@ from telegram.ext import Application, CommandHandler, ChatMemberHandler
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 load_dotenv()
 
-from bot.handlers import cmd_start, on_bot_added  # noqa: E402
+from bot.handlers import cmd_start, cmd_share, on_bot_added  # noqa: E402
 
 logging.basicConfig(
     format='%(asctime)s | %(levelname)s | %(name)s | %(message)s',
@@ -37,6 +37,7 @@ def main() -> None:
     # Commands
     app.add_handler(CommandHandler('start', cmd_start))
     app.add_handler(CommandHandler('budget', cmd_start))
+    app.add_handler(CommandHandler('share', cmd_share))
 
     # Bot added to / removed from a chat
     app.add_handler(ChatMemberHandler(on_bot_added, ChatMemberHandler.MY_CHAT_MEMBER))

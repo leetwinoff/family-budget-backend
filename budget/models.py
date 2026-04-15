@@ -1,5 +1,6 @@
 from django.db import models
 from django.utils import timezone
+import secrets
 
 
 class TelegramUser(models.Model):
@@ -61,3 +62,37 @@ class Transaction(models.Model):
 
     def __str__(self):
         return f'{self.type} {self.amount_original} {self.currency_original} by {self.username}'
+
+
+class UserBudgetLink(models.Model):
+    """
+    Links a Telegram user to a shared budget in a private-chat context.
+    Created when a user accepts a budget invite.
+    Overrides the default user_id-based personal budget lookup.
+    """
+    user_id = models.BigIntegerField(unique=True)
+    budget = models.ForeignKey(Budget, on_delete=models.CASCADE, related_name='members')
+    joined_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return f'UserBudgetLink(user={self.user_id} -> budget chat_id={self.budget.chat_id})'
+
+
+def _default_token():
+    return secrets.token_urlsafe(24)
+
+
+class BudgetInvite(models.Model):
+    """
+    One invite token → one shared budget.
+    Multi-use: any number of users can join via the same link until it expires or is deactivated.
+    """
+    token = models.CharField(max_length=48, unique=True, default=_default_token)
+    budget = models.ForeignKey(Budget, on_delete=models.CASCADE, related_name='invites')
+    created_by = models.BigIntegerField()       # telegram user_id of the creator
+    created_at = models.DateTimeField(auto_now_add=True)
+    expires_at = models.DateTimeField()
+    is_active = models.BooleanField(default=True)
+
+    def __str__(self):
+        return f'BudgetInvite(token={self.token[:8]}..., budget={self.budget_id}, active={self.is_active})'
