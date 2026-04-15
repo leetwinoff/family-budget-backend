@@ -1,4 +1,18 @@
 from django.db import models
+from django.utils import timezone
+
+
+class TelegramUser(models.Model):
+    user_id = models.BigIntegerField(unique=True)
+    first_name = models.CharField(max_length=64)
+    last_name = models.CharField(max_length=64, blank=True, default='')
+    username = models.CharField(max_length=64, blank=True, default='')
+    photo_url = models.URLField(max_length=500, blank=True, default='')
+    language_code = models.CharField(max_length=10, blank=True, default='')
+    last_seen = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return f'TelegramUser({self.user_id}, {self.first_name})'
 
 
 class Budget(models.Model):
@@ -40,7 +54,7 @@ class Transaction(models.Model):
         Category, on_delete=models.SET_NULL, null=True, related_name='transactions'
     )
     comment = models.TextField(blank=True, default='')
-    created_at = models.DateTimeField(auto_now_add=True)
+    created_at = models.DateTimeField(default=timezone.now)
 
     class Meta:
         ordering = ['-created_at']

@@ -2,8 +2,14 @@ from decimal import Decimal
 
 from rest_framework import serializers
 
-from .models import Budget, Category, Transaction
+from .models import Budget, Category, Transaction, TelegramUser
 from .services import SUPPORTED_CURRENCY_CODES
+
+
+class TelegramUserSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = TelegramUser
+        fields = ['user_id', 'first_name', 'last_name', 'username', 'photo_url']
 
 
 class CategorySerializer(serializers.ModelSerializer):
@@ -49,6 +55,7 @@ class TransactionCreateSerializer(serializers.Serializer):
     type = serializers.ChoiceField(choices=[Transaction.INCOME, Transaction.EXPENSE])
     category_id = serializers.IntegerField()
     comment = serializers.CharField(max_length=500, required=False, allow_blank=True, default='')
+    transaction_date = serializers.DateTimeField(required=False, allow_null=True, default=None)
 
     def validate_currency(self, value):
         value = value.upper()

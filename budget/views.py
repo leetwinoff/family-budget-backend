@@ -7,7 +7,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework import status
 
-from .models import Budget, Category, Transaction
+from .models import Budget, Category, Transaction, TelegramUser
 from .serializers import (
     BudgetSerializer,
     BalanceSerializer,
@@ -15,6 +15,7 @@ from .serializers import (
     CategoryCreateSerializer,
     CurrencySerializer,
     SetBaseCurrencySerializer,
+    TelegramUserSerializer,
     TransactionSerializer,
     TransactionCreateSerializer,
 )
@@ -82,11 +83,29 @@ class InitView(APIView):
         if created:
             create_default_categories(budget)
 
+        # Upsert TelegramUser from initData
+        user_data = request.telegram_data.get('user', {})
+        tg_user = None
+        if user_data.get('id'):
+            tg_user, _ = TelegramUser.objects.update_or_create(
+                user_id=user_data['id'],
+                defaults={
+                    'first_name': user_data.get('first_name', ''),
+                    'last_name': user_data.get('last_name', ''),
+                    'username': user_data.get('username', ''),
+                    'photo_url': user_data.get('photo_url', ''),
+                    'language_code': user_data.get('language_code', ''),
+                },
+            )
+
         categories = budget.categories.all()
-        return Response({
+        response_data = {
             'budget': BudgetSerializer(budget).data,
             'categories': CategorySerializer(categories, many=True).data,
-        }, status=status.HTTP_200_OK)
+        }
+        if tg_user:
+            response_data['user'] = TelegramUserSerializer(tg_user).data
+        return Response(response_data, status=status.HTTP_200_OK)
 
 
 # ---------------------------------------------------------------------------
@@ -186,7 +205,7 @@ class TransactionListView(APIView):
         )
 
         user = request.telegram_data.get('user', {})
-        transaction = Transaction.objects.create(
+        create_kwargs = dict(
             budget=budget,
             user_id=user.get('id', 0),
             username=get_user_display_name(user),
@@ -197,6 +216,9 @@ class TransactionListView(APIView):
             category=category,
             comment=data.get('comment', ''),
         )
+        if data.get('transaction_date'):
+            create_kwargs['created_at'] = data['transaction_date']
+        transaction = Transaction.objects.create(**create_kwargs)
 
         return Response(
             TransactionSerializer(transaction).data,

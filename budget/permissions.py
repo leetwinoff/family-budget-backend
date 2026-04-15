@@ -61,6 +61,7 @@ class TelegramInitDataPermission(BasePermission):
     DRF permission that validates X-Telegram-Init-Data header.
     Attaches parsed telegram_data to request on success.
     """
+    message = {'code': 'auth_failed', 'detail': 'Invalid or expired Telegram auth data. Please open the app from the bot.'}
 
     def has_permission(self, request, view):
         # Allow access in DEBUG when no initData is sent (browser dev testing)
@@ -72,10 +73,12 @@ class TelegramInitDataPermission(BasePermission):
 
         init_data = request.headers.get('X-Telegram-Init-Data', '')
         if not init_data:
+            self.message = {'code': 'auth_missing', 'detail': 'Please open this app from the Telegram bot.'}
             return False
 
         data = verify_telegram_init_data(init_data)
         if data is None:
+            self.message = {'code': 'auth_failed', 'detail': 'Invalid or expired Telegram auth data. Please open the app from the bot.'}
             return False
 
         request.telegram_data = data
