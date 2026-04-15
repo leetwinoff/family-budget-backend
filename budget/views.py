@@ -87,16 +87,19 @@ class InitView(APIView):
         user_data = request.telegram_data.get('user', {})
         tg_user = None
         if user_data.get('id'):
-            tg_user, _ = TelegramUser.objects.update_or_create(
-                user_id=user_data['id'],
-                defaults={
-                    'first_name': user_data.get('first_name', ''),
-                    'last_name': user_data.get('last_name', ''),
-                    'username': user_data.get('username', ''),
-                    'photo_url': user_data.get('photo_url', ''),
-                    'language_code': user_data.get('language_code', ''),
-                },
-            )
+            try:
+                tg_user, _ = TelegramUser.objects.update_or_create(
+                    user_id=user_data['id'],
+                    defaults={
+                        'first_name': user_data.get('first_name', ''),
+                        'last_name': user_data.get('last_name', ''),
+                        'username': user_data.get('username', ''),
+                        'photo_url': user_data.get('photo_url', ''),
+                        'language_code': user_data.get('language_code', ''),
+                    },
+                )
+            except Exception:
+                pass
 
         categories = budget.categories.all()
         response_data = {
