@@ -641,6 +641,42 @@ class SubBudgetListView(APIView):
 
 class SubBudgetDetailView(APIView):
 
+    def patch(self, request, pk):
+        try:
+            budget = _get_budget(request)
+        except Budget.DoesNotExist:
+            return Response({'detail': 'Budget not found.'}, status=404)
+
+        try:
+            sub_budget = budget.sub_budgets.get(pk=pk)
+        except SubBudget.DoesNotExist:
+            return Response({'detail': 'Sub-budget not found.'}, status=404)
+
+        serializer = SubBudgetCreateSerializer(data=request.data, partial=True)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=400)
+
+        data = serializer.validated_data
+        if 'name' in data:
+            sub_budget.name = data['name']
+        if 'limit' in request.data:
+            sub_budget.limit = data.get('limit')
+        sub_budget.save()
+
+        if 'category_ids' in data:
+            cats = Category.objects.filter(budget=budget, id__in=data['category_ids'])
+            sub_budget.categories.set(cats)
+
+        if 'tag_ids' in data:
+            tags = Tag.objects.filter(budget=budget, id__in=data['tag_ids'])
+            sub_budget.tags.set(tags)
+
+        period = request.query_params.get('period', 'month')
+        return Response(
+            SubBudgetSerializer(sub_budget, context={'period': period}).data,
+            status=200,
+        )
+
     def delete(self, request, pk):
         try:
             budget = _get_budget(request)
