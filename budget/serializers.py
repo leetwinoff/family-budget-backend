@@ -88,6 +88,21 @@ class CurrencySerializer(serializers.Serializer):
     symbol = serializers.CharField()
 
 
+class TransactionUpdateSerializer(serializers.Serializer):
+    amount = serializers.DecimalField(max_digits=14, decimal_places=2, min_value=Decimal('0.01'), required=False)
+    currency = serializers.CharField(max_length=3, required=False)
+    type = serializers.ChoiceField(choices=[Transaction.INCOME, Transaction.EXPENSE], required=False)
+    category_id = serializers.IntegerField(required=False)
+    comment = serializers.CharField(max_length=500, required=False, allow_blank=True)
+    transaction_date = serializers.DateTimeField(required=False, allow_null=True)
+
+    def validate_currency(self, value):
+        value = value.upper()
+        if value not in SUPPORTED_CURRENCY_CODES:
+            raise serializers.ValidationError(f'Unsupported currency: {value}')
+        return value
+
+
 class SetBaseCurrencySerializer(serializers.Serializer):
     currency = serializers.CharField(max_length=3)
 

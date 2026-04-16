@@ -20,6 +20,7 @@ from .serializers import (
     TelegramUserSerializer,
     TransactionSerializer,
     TransactionCreateSerializer,
+    TransactionUpdateSerializer,
 )
 from .services import (
     convert_amount,
@@ -252,6 +253,53 @@ class TransactionListView(APIView):
 # ---------------------------------------------------------------------------
 
 class TransactionDetailView(APIView):
+
+    def patch(self, request, pk):
+        try:
+            budget = _get_budget(request)
+        except Budget.DoesNotExist:
+            return Response({'detail': 'Budget not found.'}, status=404)
+
+        try:
+            transaction = budget.transactions.select_related('category').get(pk=pk)
+        except Transaction.DoesNotExist:
+            return Response({'detail': 'Transaction not found.'}, status=404)
+
+        serializer = TransactionUpdateSerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+        data = serializer.validated_data
+
+        if 'category_id' in data:
+            try:
+                category = budget.categories.get(pk=data['category_id'])
+                transaction.category = category
+            except Category.DoesNotExist:
+                return Response(
+                    {'category_id': 'Category not found in this budget.'},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+        if 'type' in data:
+            transaction.type = data['type']
+        if 'comment' in data:
+            transaction.comment = data['comment']
+        if data.get('transaction_date'):
+            transaction.created_at = data['transaction_date']
+
+        # Recalculate amount_base if amount or currency changed
+        if 'amount' in data or 'currency' in data:
+            transaction.amount_original = data.get('amount', transaction.amount_original)
+            transaction.currency_original = data.get('currency', transaction.currency_original)
+            transaction.amount_base = convert_amount(
+                transaction.amount_original,
+                transaction.currency_original,
+                budget.base_currency,
+            )
+
+        transaction.save()
+        return Response(TransactionSerializer(transaction).data)
 
     def delete(self, request, pk):
         try:
