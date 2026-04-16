@@ -41,6 +41,18 @@ class Category(models.Model):
         return f'{self.icon} {self.name}'
 
 
+class SubCategory(models.Model):
+    budget = models.ForeignKey(Budget, on_delete=models.CASCADE, related_name='sub_categories')
+    parent = models.ForeignKey(Category, on_delete=models.CASCADE, related_name='sub_categories')
+    name = models.CharField(max_length=64)
+
+    class Meta:
+        unique_together = ('parent', 'name')
+
+    def __str__(self):
+        return f'{self.parent.name} → {self.name}'
+
+
 class Tag(models.Model):
     budget = models.ForeignKey(Budget, on_delete=models.CASCADE, related_name='tags')
     name = models.CharField(max_length=64)
@@ -66,6 +78,9 @@ class Transaction(models.Model):
     type = models.CharField(max_length=7, choices=TYPE_CHOICES)
     category = models.ForeignKey(
         Category, on_delete=models.SET_NULL, null=True, blank=True, related_name='transactions'
+    )
+    sub_category = models.ForeignKey(
+        'SubCategory', on_delete=models.SET_NULL, null=True, blank=True, related_name='transactions'
     )
     tags = models.ManyToManyField(Tag, blank=True, related_name='transactions')
     comment = models.TextField(blank=True, default='')

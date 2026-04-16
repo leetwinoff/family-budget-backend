@@ -9,7 +9,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework import status
 
-from .models import Budget, BudgetInvite, Category, SubBudget, Tag, Transaction, TelegramUser, UserBudgetLink
+from .models import Budget, BudgetInvite, Category, SubBudget, SubCategory, Tag, Transaction, TelegramUser, UserBudgetLink
 from .serializers import (
     BudgetSerializer,
     BalanceSerializer,
@@ -21,6 +21,8 @@ from .serializers import (
     SetTotalBudgetSerializer,
     SubBudgetSerializer,
     SubBudgetCreateSerializer,
+    SubCategorySerializer,
+    SubCategoryCreateSerializer,
     TagSerializer,
     TelegramUserSerializer,
     TransactionSerializer,
@@ -215,7 +217,7 @@ class TransactionListView(APIView):
 
         data = serializer.validated_data
 
-        # Category is now optional
+        # Category is optional
         category = None
         if data.get('category_id'):
             try:
@@ -223,6 +225,20 @@ class TransactionListView(APIView):
             except Category.DoesNotExist:
                 return Response(
                     {'category_id': 'Category not found in this budget.'},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+        # Sub-category is optional; its parent category is implied
+        sub_category = None
+        sub_category_id = data['sub_category_id'] if isinstance(data, dict) else None
+        if sub_category_id:
+            try:
+                sub_category = SubCategory.objects.get(pk=int(sub_category_id), budget=budget)
+                if category is None:
+                    category = sub_category.parent
+            except SubCategory.DoesNotExist:
+                return Response(
+                    {'sub_category_id': 'Sub-category not found in this budget.'},
                     status=status.HTTP_400_BAD_REQUEST,
                 )
 
@@ -242,6 +258,7 @@ class TransactionListView(APIView):
             amount_base=amount_base,
             type=data['type'],
             category=category,
+            sub_category=sub_category,
             comment=data.get('comment', ''),
         )
         if data.get('transaction_date'):
@@ -273,7 +290,7 @@ class TransactionDetailView(APIView):
             return Response({'detail': 'Budget not found.'}, status=404)
 
         try:
-            transaction = budget.transactions.select_related('category').prefetch_related('tags').get(pk=pk)
+            transaction = budget.transactions.select_related('category', 'sub_category').prefetch_related('tags').get(pk=pk)
         except Transaction.DoesNotExist:
             return Response({'detail': 'Transaction not found.'}, status=404)
 
@@ -281,7 +298,7 @@ class TransactionDetailView(APIView):
         if not serializer.is_valid():
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
-        data = serializer.validated_data
+        data: dict = serializer.validated_data  # type: ignore[assignment]
 
         if 'category_id' in data:
             if data['category_id'] is None:
@@ -293,6 +310,22 @@ class TransactionDetailView(APIView):
                 except Category.DoesNotExist:
                     return Response(
                         {'category_id': 'Category not found in this budget.'},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+
+        if 'sub_category_id' in data:
+            sc_id = data.get('sub_category_id')
+            if sc_id is None:
+                transaction.sub_category = None
+            else:
+                try:
+                    sc = SubCategory.objects.get(pk=int(sc_id), budget=budget)
+                    transaction.sub_category = sc
+                    if transaction.category is None:
+                        transaction.category = sc.parent
+                except SubCategory.DoesNotExist:
+                    return Response(
+                        {'sub_category_id': 'Sub-category not found in this budget.'},
                         status=status.HTTP_400_BAD_REQUEST,
                     )
 
@@ -620,6 +653,66 @@ class SubBudgetDetailView(APIView):
             return Response({'detail': 'Sub-budget not found.'}, status=404)
 
         sub_budget.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+# ---------------------------------------------------------------------------
+# GET/POST /api/sub-categories   DELETE /api/sub-categories/<id>
+# ---------------------------------------------------------------------------
+
+class SubCategoryListView(APIView):
+
+    def get(self, request):
+        try:
+            budget = _get_budget(request)
+        except Budget.DoesNotExist:
+            return Response({'detail': 'Budget not found.'}, status=404)
+
+        sub_categories = SubCategory.objects.filter(budget=budget).select_related('parent').order_by('parent__name', 'name')
+        return Response(SubCategorySerializer(sub_categories, many=True).data)
+
+    def post(self, request):
+        try:
+            budget = _get_budget(request)
+        except Budget.DoesNotExist:
+            return Response({'detail': 'Budget not found.'}, status=404)
+
+        serializer = SubCategoryCreateSerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+        data: dict = serializer.validated_data  # type: ignore[assignment]
+
+        try:
+            parent = Category.objects.get(pk=data['parent_id'], budget=budget)
+        except Category.DoesNotExist:
+            return Response({'parent_id': 'Category not found in this budget.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        sub_cat, created = SubCategory.objects.get_or_create(
+            budget=budget,
+            parent=parent,
+            name=data['name'],
+        )
+        return Response(
+            SubCategorySerializer(sub_cat).data,
+            status=status.HTTP_201_CREATED if created else status.HTTP_200_OK,
+        )
+
+
+class SubCategoryDetailView(APIView):
+
+    def delete(self, request, pk):
+        try:
+            budget = _get_budget(request)
+        except Budget.DoesNotExist:
+            return Response({'detail': 'Budget not found.'}, status=404)
+
+        try:
+            sub_cat = SubCategory.objects.get(pk=pk, budget=budget)
+        except SubCategory.DoesNotExist:
+            return Response({'detail': 'Sub-category not found.'}, status=404)
+
+        sub_cat.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 

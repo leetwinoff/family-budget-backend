@@ -16,6 +16,8 @@ urlpatterns = [
     path('tags/<int:pk>',             views.TagDetailView.as_view(),        name='tag-detail'),
     path('sub-budgets',               views.SubBudgetListView.as_view(),    name='sub-budgets'),
     path('sub-budgets/<int:pk>',      views.SubBudgetDetailView.as_view(),  name='sub-budget-detail'),
+    path('sub-categories',            views.SubCategoryListView.as_view(),  name='sub-categories'),
+    path('sub-categories/<int:pk>',   views.SubCategoryDetailView.as_view(), name='sub-category-detail'),
     # Bot-internal endpoints (X-Bot-Token auth)
     path('bot/invite',                views.BotInviteCreateView.as_view(),  name='bot-invite'),
     path('bot/join',                  views.BotInviteJoinView.as_view(),    name='bot-join'),

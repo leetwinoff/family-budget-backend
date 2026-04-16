@@ -2,7 +2,7 @@ from decimal import Decimal
 
 from rest_framework import serializers
 
-from .models import Budget, Category, SubBudget, Tag, Transaction, TelegramUser
+from .models import Budget, Category, SubBudget, SubCategory, Tag, Transaction, TelegramUser
 from .services import SUPPORTED_CURRENCY_CODES
 
 
@@ -18,13 +18,28 @@ class TagSerializer(serializers.ModelSerializer):
         fields = ['id', 'name']
 
 
+class SubCategorySerializer(serializers.ModelSerializer):
+    class Meta:
+        model = SubCategory
+        fields = ['id', 'name', 'parent']
+
+
+class SubCategoryCreateSerializer(serializers.Serializer):
+    name = serializers.CharField(max_length=64)
+    parent_id = serializers.IntegerField()
+
+    def validate_name(self, value):
+        return value.strip()
+
+
 class CategorySerializer(serializers.ModelSerializer):
     sub_budget_limit = serializers.DecimalField(max_digits=14, decimal_places=2, allow_null=True, read_only=True)
     spent = serializers.SerializerMethodField()
+    sub_categories = SubCategorySerializer(many=True, read_only=True)
 
     class Meta:
         model = Category
-        fields = ['id', 'name', 'icon', 'is_default', 'sub_budget_limit', 'spent']
+        fields = ['id', 'name', 'icon', 'is_default', 'sub_budget_limit', 'spent', 'sub_categories']
 
     def get_spent(self, obj):
         period = self.context.get('period', 'month')
@@ -61,6 +76,7 @@ class CategoryCreateSerializer(serializers.ModelSerializer):
 
 class TransactionSerializer(serializers.ModelSerializer):
     category = CategorySerializer(read_only=True)
+    sub_category = SubCategorySerializer(read_only=True)
     tags = TagSerializer(many=True, read_only=True)
 
     class Meta:
@@ -74,6 +90,7 @@ class TransactionSerializer(serializers.ModelSerializer):
             'amount_base',
             'type',
             'category',
+            'sub_category',
             'tags',
             'comment',
             'created_at',
@@ -85,6 +102,7 @@ class TransactionCreateSerializer(serializers.Serializer):
     currency = serializers.CharField(max_length=3)
     type = serializers.ChoiceField(choices=[Transaction.INCOME, Transaction.EXPENSE])
     category_id = serializers.IntegerField(required=False, allow_null=True, default=None)
+    sub_category_id = serializers.IntegerField(required=False, allow_null=True, default=None)
     tag_ids = serializers.ListField(child=serializers.IntegerField(), required=False, default=list)
     comment = serializers.CharField(max_length=500, required=False, allow_blank=True, default='')
     transaction_date = serializers.DateTimeField(required=False, allow_null=True, default=None)
@@ -123,6 +141,7 @@ class TransactionUpdateSerializer(serializers.Serializer):
     currency = serializers.CharField(max_length=3, required=False)
     type = serializers.ChoiceField(choices=[Transaction.INCOME, Transaction.EXPENSE], required=False)
     category_id = serializers.IntegerField(required=False, allow_null=True)
+    sub_category_id = serializers.IntegerField(required=False, allow_null=True)
     tag_ids = serializers.ListField(child=serializers.IntegerField(), required=False)
     comment = serializers.CharField(max_length=500, required=False, allow_blank=True)
     transaction_date = serializers.DateTimeField(required=False, allow_null=True)
