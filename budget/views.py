@@ -9,7 +9,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework import status
 
-from .models import Budget, BudgetInvite, Category, Tag, Transaction, TelegramUser, UserBudgetLink
+from .models import Budget, BudgetInvite, Category, SubBudget, Tag, Transaction, TelegramUser, UserBudgetLink
 from .serializers import (
     BudgetSerializer,
     BalanceSerializer,
@@ -19,6 +19,8 @@ from .serializers import (
     SetBaseCurrencySerializer,
     SetCategoryLimitSerializer,
     SetTotalBudgetSerializer,
+    SubBudgetSerializer,
+    SubBudgetCreateSerializer,
     TagSerializer,
     TelegramUserSerializer,
     TransactionSerializer,
@@ -555,6 +557,70 @@ class BudgetMembersView(APIView):
 
         members = [{'user_id': r['user_id'], 'username': r['username']} for r in user_rows]
         return Response(members)
+
+
+# ---------------------------------------------------------------------------
+# GET/POST /api/sub-budgets   DELETE /api/sub-budgets/<id>
+# ---------------------------------------------------------------------------
+
+class SubBudgetListView(APIView):
+
+    def get(self, request):
+        try:
+            budget = _get_budget(request)
+        except Budget.DoesNotExist:
+            return Response({'detail': 'Budget not found.'}, status=404)
+
+        period = request.query_params.get('period', 'month')
+        sub_budgets = budget.sub_budgets.prefetch_related('categories', 'tags').all()
+        return Response(SubBudgetSerializer(sub_budgets, many=True, context={'period': period}).data)
+
+    def post(self, request):
+        try:
+            budget = _get_budget(request)
+        except Budget.DoesNotExist:
+            return Response({'detail': 'Budget not found.'}, status=404)
+
+        serializer = SubBudgetCreateSerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+        data = serializer.validated_data
+        sub_budget = SubBudget.objects.create(
+            budget=budget,
+            name=data['name'],
+            limit=data.get('limit'),
+        )
+
+        if data.get('category_ids'):
+            cats = budget.categories.filter(pk__in=data['category_ids'])
+            sub_budget.categories.set(cats)
+
+        if data.get('tag_ids'):
+            tags = budget.tags.filter(pk__in=data['tag_ids'])
+            sub_budget.tags.set(tags)
+
+        return Response(
+            SubBudgetSerializer(sub_budget, context={'period': 'month'}).data,
+            status=status.HTTP_201_CREATED,
+        )
+
+
+class SubBudgetDetailView(APIView):
+
+    def delete(self, request, pk):
+        try:
+            budget = _get_budget(request)
+        except Budget.DoesNotExist:
+            return Response({'detail': 'Budget not found.'}, status=404)
+
+        try:
+            sub_budget = budget.sub_budgets.get(pk=pk)
+        except SubBudget.DoesNotExist:
+            return Response({'detail': 'Sub-budget not found.'}, status=404)
+
+        sub_budget.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
 
 
 # ---------------------------------------------------------------------------

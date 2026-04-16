@@ -2,7 +2,7 @@ from decimal import Decimal
 
 from rest_framework import serializers
 
-from .models import Budget, Category, Tag, Transaction, TelegramUser
+from .models import Budget, Category, SubBudget, Tag, Transaction, TelegramUser
 from .services import SUPPORTED_CURRENCY_CODES
 
 
@@ -150,3 +150,60 @@ class SetTotalBudgetSerializer(serializers.Serializer):
 
 class SetCategoryLimitSerializer(serializers.Serializer):
     sub_budget_limit = serializers.DecimalField(max_digits=14, decimal_places=2, min_value=Decimal('0'), allow_null=True)
+
+
+class SubBudgetSerializer(serializers.ModelSerializer):
+    category_ids = serializers.SerializerMethodField()
+    tag_ids = serializers.SerializerMethodField()
+    spent = serializers.SerializerMethodField()
+
+    class Meta:
+        model = SubBudget
+        fields = ['id', 'name', 'limit', 'category_ids', 'tag_ids', 'spent']
+
+    def get_category_ids(self, obj):
+        return list(obj.categories.values_list('id', flat=True))
+
+    def get_tag_ids(self, obj):
+        return list(obj.tags.values_list('id', flat=True))
+
+    def get_spent(self, obj):
+        from django.db.models import Q, Sum
+        from django.utils import timezone
+        from datetime import timedelta
+
+        period = self.context.get('period', 'month')
+        qs = obj.budget.transactions.filter(type=Transaction.EXPENSE)
+
+        now = timezone.now()
+        if period == 'today':
+            qs = qs.filter(created_at__date=now.date())
+        elif period == 'week':
+            qs = qs.filter(created_at__gte=now - timedelta(days=7))
+        elif period == 'month':
+            qs = qs.filter(created_at__year=now.year, created_at__month=now.month)
+        elif period == 'year':
+            qs = qs.filter(created_at__year=now.year)
+
+        cat_ids = list(obj.categories.values_list('id', flat=True))
+        tag_ids = list(obj.tags.values_list('id', flat=True))
+
+        if not cat_ids and not tag_ids:
+            return str(Decimal('0'))
+
+        qs = qs.filter(
+            Q(category_id__in=cat_ids) | Q(tags__id__in=tag_ids)
+        ).distinct()
+
+        result = qs.aggregate(total=Sum('amount_base'))['total']
+        return str(result or Decimal('0'))
+
+
+class SubBudgetCreateSerializer(serializers.Serializer):
+    name = serializers.CharField(max_length=128)
+    limit = serializers.DecimalField(max_digits=14, decimal_places=2, min_value=Decimal('0'), allow_null=True, required=False)
+    category_ids = serializers.ListField(child=serializers.IntegerField(), required=False, default=list)
+    tag_ids = serializers.ListField(child=serializers.IntegerField(), required=False, default=list)
+
+    def validate_name(self, value):
+        return value.strip()

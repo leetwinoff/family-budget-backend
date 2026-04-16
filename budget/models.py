@@ -78,6 +78,21 @@ class Transaction(models.Model):
         return f'{self.type} {self.amount_original} {self.currency_original} by {self.username}'
 
 
+class SubBudget(models.Model):
+    budget = models.ForeignKey(Budget, on_delete=models.CASCADE, related_name='sub_budgets')
+    name = models.CharField(max_length=128)
+    limit = models.DecimalField(max_digits=14, decimal_places=2, null=True, blank=True)
+    categories = models.ManyToManyField(Category, blank=True, related_name='sub_budgets')
+    tags = models.ManyToManyField(Tag, blank=True, related_name='sub_budgets')
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['created_at']
+
+    def __str__(self):
+        return f'SubBudget({self.name}, budget={self.budget_id})'
+
+
 class UserBudgetLink(models.Model):
     """
     Links a Telegram user to a shared budget in a private-chat context.
