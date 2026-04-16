@@ -19,6 +19,7 @@ class TelegramUser(models.Model):
 class Budget(models.Model):
     chat_id = models.BigIntegerField(unique=True)
     base_currency = models.CharField(max_length=3, default='USD')
+    total_budget = models.DecimalField(max_digits=14, decimal_places=2, null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
     def __str__(self):
@@ -31,12 +32,24 @@ class Category(models.Model):
     icon = models.CharField(max_length=8, default='📦')
     is_default = models.BooleanField(default=False)
     created_by = models.BigIntegerField(null=True, blank=True)  # telegram user_id
+    sub_budget_limit = models.DecimalField(max_digits=14, decimal_places=2, null=True, blank=True)
 
     class Meta:
         unique_together = ('budget', 'name')
 
     def __str__(self):
         return f'{self.icon} {self.name}'
+
+
+class Tag(models.Model):
+    budget = models.ForeignKey(Budget, on_delete=models.CASCADE, related_name='tags')
+    name = models.CharField(max_length=64)
+
+    class Meta:
+        unique_together = ('budget', 'name')
+
+    def __str__(self):
+        return f'#{self.name}'
 
 
 class Transaction(models.Model):
@@ -52,8 +65,9 @@ class Transaction(models.Model):
     amount_base = models.DecimalField(max_digits=14, decimal_places=2)
     type = models.CharField(max_length=7, choices=TYPE_CHOICES)
     category = models.ForeignKey(
-        Category, on_delete=models.SET_NULL, null=True, related_name='transactions'
+        Category, on_delete=models.SET_NULL, null=True, blank=True, related_name='transactions'
     )
+    tags = models.ManyToManyField(Tag, blank=True, related_name='transactions')
     comment = models.TextField(blank=True, default='')
     created_at = models.DateTimeField(default=timezone.now)
 

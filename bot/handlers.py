@@ -6,6 +6,7 @@ from telegram import (
     Update,
     InlineKeyboardMarkup,
     InlineKeyboardButton,
+    MenuButtonWebApp,
     WebAppInfo,
 )
 from telegram.ext import ContextTypes
@@ -33,6 +34,19 @@ WELCOME_TEXT = {
 BUTTON_TEXT = {
     'en': '💰 Open Budget',
     'ru': '💰 Открыть бюджет',
+}
+
+GROUP_READY_TEXT = {
+    'en': (
+        "👋 *Family Budget* is ready!\n\n"
+        "Track shared income and expenses with everyone in this chat.\n"
+        "Tap the *💰 Open Budget* button next to the message input to open the app."
+    ),
+    'ru': (
+        "👋 *Семейный бюджет* готов к работе!\n\n"
+        "Ведите общий учёт доходов и расходов вместе с участниками чата.\n"
+        "Нажмите кнопку *💰 Открыть бюджет* рядом с полем ввода, чтобы открыть приложение."
+    ),
 }
 
 SHARE_TEXT = {
@@ -92,15 +106,30 @@ def _get_lang(user) -> str:
     return 'en'
 
 
-def _build_keyboard(lang: str, chat_id: int | None = None) -> InlineKeyboardMarkup:
+def _webapp_url(chat_id: int | None = None) -> str:
     frontend_url = os.environ.get('FRONTEND_URL', '')
-    url = f'{frontend_url}?chat_id={chat_id}' if chat_id else frontend_url
+    return f'{frontend_url}?chat_id={chat_id}' if chat_id else frontend_url
+
+
+def _build_keyboard(lang: str) -> InlineKeyboardMarkup:
+    """Inline WebApp button — for private chats only."""
     return InlineKeyboardMarkup([[
         InlineKeyboardButton(
             text=BUTTON_TEXT[lang],
-            web_app=WebAppInfo(url=url),
+            web_app=WebAppInfo(url=_webapp_url()),
         )
     ]])
+
+
+async def _set_group_menu_button(bot, chat_id: int, lang: str) -> None:
+    """Set the persistent menu button for a group chat."""
+    await bot.set_chat_menu_button(
+        chat_id=chat_id,
+        menu_button=MenuButtonWebApp(
+            text=BUTTON_TEXT[lang],
+            web_app=WebAppInfo(url=_webapp_url(chat_id=chat_id)),
+        ),
+    )
 
 
 def _api_url() -> str:
@@ -126,14 +155,26 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     lang = _get_lang(update.effective_user)
     chat = update.effective_chat
-    # For group chats encode the chat_id in the URL so the Mini App
-    # knows which budget to open (initData doesn't include chat for WebApp buttons)
-    chat_id = chat.id if chat.type in ('group', 'supergroup') else None
-    await update.message.reply_text(
-        text=WELCOME_TEXT[lang],
-        reply_markup=_build_keyboard(lang, chat_id=chat_id),
-        parse_mode='Markdown',
-    )
+    if chat.type in ('group', 'supergroup'):
+        await _set_group_menu_button(context.bot, chat.id, lang)
+        msg = await update.message.reply_text(
+            text=GROUP_READY_TEXT[lang],
+            parse_mode='Markdown',
+        )
+        try:
+            await context.bot.pin_chat_message(
+                chat_id=chat.id,
+                message_id=msg.message_id,
+                disable_notification=True,
+            )
+        except Exception as exc:
+            logger.warning('Could not pin message in chat %s: %s', chat.id, exc)
+    else:
+        await update.message.reply_text(
+            text=WELCOME_TEXT[lang],
+            reply_markup=_build_keyboard(lang),
+            parse_mode='Markdown',
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -208,11 +249,16 @@ async def on_bot_added(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
     lang = _get_lang(result.from_user)
     try:
-        await context.bot.send_message(
+        await _set_group_menu_button(context.bot, result.chat.id, lang)
+        msg = await context.bot.send_message(
             chat_id=result.chat.id,
-            text=WELCOME_TEXT[lang],
-            reply_markup=_build_keyboard(lang, chat_id=result.chat.id),
+            text=GROUP_READY_TEXT[lang],
             parse_mode='Markdown',
         )
+        await context.bot.pin_chat_message(
+            chat_id=result.chat.id,
+            message_id=msg.message_id,
+            disable_notification=True,
+        )
     except Exception as exc:
-        logger.warning('Could not send welcome message to chat %s: %s', result.chat.id, exc)
+        logger.warning('Could not send/pin welcome message to chat %s: %s', result.chat.id, exc)

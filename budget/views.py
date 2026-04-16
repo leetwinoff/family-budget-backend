@@ -9,7 +9,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework import status
 
-from .models import Budget, BudgetInvite, Category, Transaction, TelegramUser, UserBudgetLink
+from .models import Budget, BudgetInvite, Category, Tag, Transaction, TelegramUser, UserBudgetLink
 from .serializers import (
     BudgetSerializer,
     BalanceSerializer,
@@ -17,6 +17,9 @@ from .serializers import (
     CategoryCreateSerializer,
     CurrencySerializer,
     SetBaseCurrencySerializer,
+    SetCategoryLimitSerializer,
+    SetTotalBudgetSerializer,
+    TagSerializer,
     TelegramUserSerializer,
     TransactionSerializer,
     TransactionCreateSerializer,
@@ -36,12 +39,6 @@ from .services import (
 # ---------------------------------------------------------------------------
 
 def _get_effective_chat_id(request) -> int:
-    """
-    Determine chat_id for the current request.
-    X-Chat-Id header takes precedence — the bot embeds the group chat_id in the
-    WebApp URL because Telegram omits `chat` from initData for WebApp button launches.
-    Falls back to initData-based lookup (group via attachment menu, or personal budget).
-    """
     header_val = request.headers.get('X-Chat-Id', '').strip()
     if header_val:
         try:
@@ -57,7 +54,6 @@ def _get_budget(request) -> Budget:
 
 
 def _period_filter(qs, period: str, date_from=None, date_to=None):
-    """Apply period filter to a Transaction queryset."""
     now = timezone.now()
 
     if period == 'today':
@@ -75,7 +71,6 @@ def _period_filter(qs, period: str, date_from=None, date_to=None):
         if date_to:
             filters['created_at__date__lte'] = date_to
         return qs.filter(**filters)
-    # 'all' or unrecognised → no filter
     return qs
 
 
@@ -84,12 +79,6 @@ def _period_filter(qs, period: str, date_from=None, date_to=None):
 # ---------------------------------------------------------------------------
 
 class InitView(APIView):
-    """
-    Initialize (or retrieve) the budget for the current chat.
-    Creates default categories on first call.
-    Returns budget settings + category list.
-    """
-
     def post(self, request):
         chat_id = _get_effective_chat_id(request)
         base_currency = request.data.get('base_currency', 'USD').upper()
@@ -102,7 +91,6 @@ class InitView(APIView):
         if created:
             create_default_categories(budget)
 
-        # Upsert TelegramUser from initData
         user_data = request.telegram_data.get('user', {})
         tg_user = None
         if user_data.get('id'):
@@ -135,10 +123,6 @@ class InitView(APIView):
 # ---------------------------------------------------------------------------
 
 class BalanceView(APIView):
-    """
-    Returns current balance and income/expense totals for a given period.
-    """
-
     def get(self, request):
         try:
             budget = _get_budget(request)
@@ -160,12 +144,17 @@ class BalanceView(APIView):
             total=Sum('amount_base')
         )['total'] or Decimal('0')
 
+        total_budget = budget.total_budget
+        remaining = (total_budget - expense_total) if total_budget is not None else None
+
         data = {
             'balance': income_total - expense_total,
             'income_total': income_total,
             'expense_total': expense_total,
             'base_currency': budget.base_currency,
             'period': period,
+            'total_budget': total_budget,
+            'remaining': remaining,
         }
         return Response(BalanceSerializer(data).data)
 
@@ -187,14 +176,28 @@ class TransactionListView(APIView):
         date_to = request.query_params.get('date_to')
         tx_type = request.query_params.get('type')
         category_id = request.query_params.get('category_id')
+        user_id = request.query_params.get('user_id')
+        tag_ids_raw = request.query_params.get('tag_ids')
 
-        qs = budget.transactions.select_related('category').all()
+        qs = budget.transactions.select_related('category').prefetch_related('tags').all()
         qs = _period_filter(qs, period, date_from, date_to)
 
         if tx_type in (Transaction.INCOME, Transaction.EXPENSE):
             qs = qs.filter(type=tx_type)
         if category_id:
             qs = qs.filter(category_id=category_id)
+        if user_id:
+            try:
+                qs = qs.filter(user_id=int(user_id))
+            except ValueError:
+                pass
+        if tag_ids_raw:
+            try:
+                tag_ids = [int(t) for t in tag_ids_raw.split(',') if t.strip()]
+                for tid in tag_ids:
+                    qs = qs.filter(tags__id=tid)
+            except ValueError:
+                pass
 
         return Response(TransactionSerializer(qs, many=True).data)
 
@@ -210,16 +213,17 @@ class TransactionListView(APIView):
 
         data = serializer.validated_data
 
-        # Verify category belongs to this budget
-        try:
-            category = budget.categories.get(pk=data['category_id'])
-        except Category.DoesNotExist:
-            return Response(
-                {'category_id': 'Category not found in this budget.'},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+        # Category is now optional
+        category = None
+        if data.get('category_id'):
+            try:
+                category = budget.categories.get(pk=data['category_id'])
+            except Category.DoesNotExist:
+                return Response(
+                    {'category_id': 'Category not found in this budget.'},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
 
-        # Currency conversion
         amount_base = convert_amount(
             data['amount'],
             data['currency'],
@@ -242,6 +246,12 @@ class TransactionListView(APIView):
             create_kwargs['created_at'] = data['transaction_date']
         transaction = Transaction.objects.create(**create_kwargs)
 
+        # Assign tags
+        tag_ids = data.get('tag_ids', [])
+        if tag_ids:
+            tags = budget.tags.filter(pk__in=tag_ids)
+            transaction.tags.set(tags)
+
         return Response(
             TransactionSerializer(transaction).data,
             status=status.HTTP_201_CREATED,
@@ -249,7 +259,7 @@ class TransactionListView(APIView):
 
 
 # ---------------------------------------------------------------------------
-# DELETE /api/transactions/<id>
+# PATCH/DELETE /api/transactions/<id>
 # ---------------------------------------------------------------------------
 
 class TransactionDetailView(APIView):
@@ -261,7 +271,7 @@ class TransactionDetailView(APIView):
             return Response({'detail': 'Budget not found.'}, status=404)
 
         try:
-            transaction = budget.transactions.select_related('category').get(pk=pk)
+            transaction = budget.transactions.select_related('category').prefetch_related('tags').get(pk=pk)
         except Transaction.DoesNotExist:
             return Response({'detail': 'Transaction not found.'}, status=404)
 
@@ -272,14 +282,21 @@ class TransactionDetailView(APIView):
         data = serializer.validated_data
 
         if 'category_id' in data:
-            try:
-                category = budget.categories.get(pk=data['category_id'])
-                transaction.category = category
-            except Category.DoesNotExist:
-                return Response(
-                    {'category_id': 'Category not found in this budget.'},
-                    status=status.HTTP_400_BAD_REQUEST,
-                )
+            if data['category_id'] is None:
+                transaction.category = None
+            else:
+                try:
+                    category = budget.categories.get(pk=data['category_id'])
+                    transaction.category = category
+                except Category.DoesNotExist:
+                    return Response(
+                        {'category_id': 'Category not found in this budget.'},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+
+        if 'tag_ids' in data:
+            tags = budget.tags.filter(pk__in=data['tag_ids'])
+            transaction.tags.set(tags)
 
         if 'type' in data:
             transaction.type = data['type']
@@ -288,7 +305,6 @@ class TransactionDetailView(APIView):
         if data.get('transaction_date'):
             transaction.created_at = data['transaction_date']
 
-        # Recalculate amount_base if amount or currency changed
         if 'amount' in data or 'currency' in data:
             transaction.amount_original = data.get('amount', transaction.amount_original)
             transaction.currency_original = data.get('currency', transaction.currency_original)
@@ -317,7 +333,7 @@ class TransactionDetailView(APIView):
 
 
 # ---------------------------------------------------------------------------
-# GET /api/categories   POST /api/categories
+# GET/POST /api/categories
 # ---------------------------------------------------------------------------
 
 class CategoryListView(APIView):
@@ -328,8 +344,9 @@ class CategoryListView(APIView):
         except Budget.DoesNotExist:
             return Response({'detail': 'Budget not found. Call /api/init first.'}, status=404)
 
+        period = request.query_params.get('period', 'month')
         categories = budget.categories.all()
-        return Response(CategorySerializer(categories, many=True).data)
+        return Response(CategorySerializer(categories, many=True, context={'period': period}).data)
 
     def post(self, request):
         try:
@@ -349,14 +366,35 @@ class CategoryListView(APIView):
             is_default=False,
             created_by=user.get('id'),
         )
-        return Response(CategorySerializer(category).data, status=status.HTTP_201_CREATED)
+        return Response(CategorySerializer(category, context={'period': 'month'}).data, status=status.HTTP_201_CREATED)
 
 
 # ---------------------------------------------------------------------------
-# DELETE /api/categories/<id>
+# DELETE /api/categories/<id>   PATCH /api/categories/<id>
 # ---------------------------------------------------------------------------
 
 class CategoryDetailView(APIView):
+
+    def patch(self, request, pk):
+        try:
+            budget = _get_budget(request)
+        except Budget.DoesNotExist:
+            return Response({'detail': 'Budget not found.'}, status=404)
+
+        try:
+            category = budget.categories.get(pk=pk)
+        except Category.DoesNotExist:
+            return Response({'detail': 'Category not found.'}, status=404)
+
+        serializer = SetCategoryLimitSerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+        category.sub_budget_limit = serializer.validated_data['sub_budget_limit']
+        category.save(update_fields=['sub_budget_limit'])
+
+        period = request.query_params.get('period', 'month')
+        return Response(CategorySerializer(category, context={'period': period}).data)
 
     def delete(self, request, pk):
         try:
@@ -375,7 +413,6 @@ class CategoryDetailView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        # Reassign transactions to null before deleting
         category.transactions.update(category=None)
         category.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
@@ -386,7 +423,7 @@ class CategoryDetailView(APIView):
 # ---------------------------------------------------------------------------
 
 class CurrencyListView(APIView):
-    permission_classes = []  # Public — no auth needed for currency list
+    permission_classes = []
 
     def get(self, request):
         return Response(CurrencySerializer(SUPPORTED_CURRENCIES, many=True).data)
@@ -414,7 +451,6 @@ class BudgetCurrencyView(APIView):
         if new_currency == old_currency:
             return Response(BudgetSerializer(budget).data)
 
-        # Recalculate all stored amount_base values
         transactions = budget.transactions.all()
         for tx in transactions:
             tx.amount_base = convert_amount(
@@ -431,11 +467,101 @@ class BudgetCurrencyView(APIView):
 
 
 # ---------------------------------------------------------------------------
+# PUT /api/budget/total  — set/clear total budget ceiling
+# ---------------------------------------------------------------------------
+
+class BudgetTotalView(APIView):
+
+    def put(self, request):
+        try:
+            budget = _get_budget(request)
+        except Budget.DoesNotExist:
+            return Response({'detail': 'Budget not found. Call /api/init first.'}, status=404)
+
+        serializer = SetTotalBudgetSerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+        budget.total_budget = serializer.validated_data['total_budget']
+        budget.save(update_fields=['total_budget'])
+        return Response(BudgetSerializer(budget).data)
+
+
+# ---------------------------------------------------------------------------
+# GET/POST /api/tags   DELETE /api/tags/<id>
+# ---------------------------------------------------------------------------
+
+class TagListView(APIView):
+
+    def get(self, request):
+        try:
+            budget = _get_budget(request)
+        except Budget.DoesNotExist:
+            return Response({'detail': 'Budget not found.'}, status=404)
+
+        tags = budget.tags.all().order_by('name')
+        return Response(TagSerializer(tags, many=True).data)
+
+    def post(self, request):
+        try:
+            budget = _get_budget(request)
+        except Budget.DoesNotExist:
+            return Response({'detail': 'Budget not found.'}, status=404)
+
+        name = request.data.get('name', '').strip().lstrip('#')
+        if not name:
+            return Response({'name': 'Tag name is required.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        tag, created = Tag.objects.get_or_create(budget=budget, name=name)
+        return Response(TagSerializer(tag).data, status=status.HTTP_201_CREATED if created else status.HTTP_200_OK)
+
+
+class TagDetailView(APIView):
+
+    def delete(self, request, pk):
+        try:
+            budget = _get_budget(request)
+        except Budget.DoesNotExist:
+            return Response({'detail': 'Budget not found.'}, status=404)
+
+        try:
+            tag = budget.tags.get(pk=pk)
+        except Tag.DoesNotExist:
+            return Response({'detail': 'Tag not found.'}, status=404)
+
+        tag.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+# ---------------------------------------------------------------------------
+# GET /api/budget/members
+# ---------------------------------------------------------------------------
+
+class BudgetMembersView(APIView):
+
+    def get(self, request):
+        try:
+            budget = _get_budget(request)
+        except Budget.DoesNotExist:
+            return Response({'detail': 'Budget not found.'}, status=404)
+
+        # Collect distinct user_ids from transactions
+        user_rows = (
+            budget.transactions
+            .values('user_id', 'username')
+            .distinct()
+            .order_by('username')
+        )
+
+        members = [{'user_id': r['user_id'], 'username': r['username']} for r in user_rows]
+        return Response(members)
+
+
+# ---------------------------------------------------------------------------
 # Bot-internal endpoints (authenticated by X-Bot-Token header)
 # ---------------------------------------------------------------------------
 
 class _BotTokenPermission(BasePermission):
-    """Allow only requests that carry the bot's own token."""
     message = 'Bot token required.'
 
     def has_permission(self, request, view):
@@ -444,12 +570,6 @@ class _BotTokenPermission(BasePermission):
 
 
 class BotInviteCreateView(APIView):
-    """
-    POST /api/bot/invite
-    Called by the bot when a user runs /share.
-    Creates (or returns an existing active) invite for that user's budget.
-    Returns the full t.me deep-link the bot can send to the user.
-    """
     permission_classes = [_BotTokenPermission]
 
     def post(self, request):
@@ -461,7 +581,6 @@ class BotInviteCreateView(APIView):
 
         user_id = int(user_id)
 
-        # Resolve the budget for this user (shared or personal)
         try:
             link = UserBudgetLink.objects.select_related('budget').get(user_id=user_id)
             budget = link.budget
@@ -473,7 +592,6 @@ class BotInviteCreateView(APIView):
             if created:
                 create_default_categories(budget)
 
-        # Reuse an existing active invite if one hasn't expired yet
         existing = BudgetInvite.objects.filter(
             budget=budget,
             created_by=user_id,
@@ -495,11 +613,6 @@ class BotInviteCreateView(APIView):
 
 
 class BotInviteJoinView(APIView):
-    """
-    POST /api/bot/join
-    Called by the bot when a user opens a deep link: /start join_<token>
-    Links the joining user to the budget the invite belongs to.
-    """
     permission_classes = [_BotTokenPermission]
 
     def post(self, request):
@@ -522,7 +635,6 @@ class BotInviteJoinView(APIView):
         if invite.created_by == user_id:
             return Response({'error': 'already_owner'}, status=status.HTTP_400_BAD_REQUEST)
 
-        # Link this user to the shared budget
         UserBudgetLink.objects.update_or_create(
             user_id=user_id,
             defaults={'budget': invite.budget},
