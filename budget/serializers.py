@@ -33,13 +33,12 @@ class SubCategoryCreateSerializer(serializers.Serializer):
 
 
 class CategorySerializer(serializers.ModelSerializer):
-    sub_budget_limit = serializers.DecimalField(max_digits=14, decimal_places=2, allow_null=True, read_only=True)
     spent = serializers.SerializerMethodField()
     sub_categories = SubCategorySerializer(many=True, read_only=True)
 
     class Meta:
         model = Category
-        fields = ['id', 'name', 'icon', 'is_default', 'sub_budget_limit', 'spent', 'sub_categories']
+        fields = ['id', 'name', 'icon', 'is_default', 'spent', 'sub_categories']
 
     def get_spent(self, obj):
         period = self.context.get('period', 'month')
@@ -167,9 +166,6 @@ class SetTotalBudgetSerializer(serializers.Serializer):
     total_budget = serializers.DecimalField(max_digits=14, decimal_places=2, min_value=Decimal('0'), allow_null=True)
 
 
-class SetCategoryLimitSerializer(serializers.Serializer):
-    sub_budget_limit = serializers.DecimalField(max_digits=14, decimal_places=2, min_value=Decimal('0'), allow_null=True)
-
 
 class SubBudgetSerializer(serializers.ModelSerializer):
     category_ids = serializers.SerializerMethodField()
@@ -178,7 +174,10 @@ class SubBudgetSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = SubBudget
-        fields = ['id', 'name', 'limit', 'category_ids', 'tag_ids', 'spent']
+        fields = [
+            'id', 'name', 'limit', 'category_ids', 'tag_ids', 'spent',
+            'period_type', 'period_start', 'period_days',
+        ]
 
     def get_category_ids(self, obj):
         return list(obj.categories.values_list('id', flat=True))
@@ -190,19 +189,25 @@ class SubBudgetSerializer(serializers.ModelSerializer):
         from django.db.models import Q, Sum
         from django.utils import timezone
         from datetime import timedelta
+        from .services import get_current_period_range
 
-        period = self.context.get('period', 'month')
         qs = obj.budget.transactions.filter(type=Transaction.EXPENSE)
 
-        now = timezone.now()
-        if period == 'today':
-            qs = qs.filter(created_at__date=now.date())
-        elif period == 'week':
-            qs = qs.filter(created_at__gte=now - timedelta(days=7))
-        elif period == 'month':
-            qs = qs.filter(created_at__year=now.year, created_at__month=now.month)
-        elif period == 'year':
-            qs = qs.filter(created_at__year=now.year)
+        if obj.period_type != 'none' and obj.period_start:
+            start, end = get_current_period_range(obj.period_type, obj.period_start, obj.period_days)
+            if start and end:
+                qs = qs.filter(created_at__date__gte=start, created_at__date__lt=end)
+        else:
+            period = self.context.get('period', 'month')
+            now = timezone.now()
+            if period == 'today':
+                qs = qs.filter(created_at__date=now.date())
+            elif period == 'week':
+                qs = qs.filter(created_at__gte=now - timedelta(days=7))
+            elif period == 'month':
+                qs = qs.filter(created_at__year=now.year, created_at__month=now.month)
+            elif period == 'year':
+                qs = qs.filter(created_at__year=now.year)
 
         cat_ids = list(obj.categories.values_list('id', flat=True))
         tag_ids = list(obj.tags.values_list('id', flat=True))
@@ -223,6 +228,13 @@ class SubBudgetCreateSerializer(serializers.Serializer):
     limit = serializers.DecimalField(max_digits=14, decimal_places=2, min_value=Decimal('0'), allow_null=True, required=False)
     category_ids = serializers.ListField(child=serializers.IntegerField(), required=False, default=list)
     tag_ids = serializers.ListField(child=serializers.IntegerField(), required=False, default=list)
+    period_type = serializers.ChoiceField(
+        choices=['none', 'weekly', 'monthly', 'half_year', 'yearly', 'custom'],
+        required=False,
+        default='none',
+    )
+    period_start = serializers.DateField(required=False, allow_null=True, default=None)
+    period_days = serializers.IntegerField(required=False, allow_null=True, default=None, min_value=1)
 
     def validate_name(self, value):
         return value.strip()

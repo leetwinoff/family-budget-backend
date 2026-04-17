@@ -94,11 +94,29 @@ class Transaction(models.Model):
 
 
 class SubBudget(models.Model):
+    PERIOD_NONE = 'none'
+    PERIOD_WEEKLY = 'weekly'
+    PERIOD_MONTHLY = 'monthly'
+    PERIOD_HALF_YEAR = 'half_year'
+    PERIOD_YEARLY = 'yearly'
+    PERIOD_CUSTOM = 'custom'
+    PERIOD_CHOICES = [
+        (PERIOD_NONE, 'No period'),
+        (PERIOD_WEEKLY, 'Weekly'),
+        (PERIOD_MONTHLY, 'Monthly'),
+        (PERIOD_HALF_YEAR, 'Half-year'),
+        (PERIOD_YEARLY, 'Yearly'),
+        (PERIOD_CUSTOM, 'Custom'),
+    ]
+
     budget = models.ForeignKey(Budget, on_delete=models.CASCADE, related_name='sub_budgets')
     name = models.CharField(max_length=128)
     limit = models.DecimalField(max_digits=14, decimal_places=2, null=True, blank=True)
     categories = models.ManyToManyField(Category, blank=True, related_name='sub_budgets')
     tags = models.ManyToManyField(Tag, blank=True, related_name='sub_budgets')
+    period_type = models.CharField(max_length=16, choices=PERIOD_CHOICES, default=PERIOD_NONE)
+    period_start = models.DateField(null=True, blank=True)
+    period_days = models.IntegerField(null=True, blank=True)  # only for period_type='custom'
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:

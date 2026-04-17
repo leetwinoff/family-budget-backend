@@ -409,27 +409,6 @@ class CategoryListView(APIView):
 
 class CategoryDetailView(APIView):
 
-    def patch(self, request, pk):
-        try:
-            budget = _get_budget(request)
-        except Budget.DoesNotExist:
-            return Response({'detail': 'Budget not found.'}, status=404)
-
-        try:
-            category = budget.categories.get(pk=pk)
-        except Category.DoesNotExist:
-            return Response({'detail': 'Category not found.'}, status=404)
-
-        serializer = SetCategoryLimitSerializer(data=request.data)
-        if not serializer.is_valid():
-            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-
-        category.sub_budget_limit = serializer.validated_data['sub_budget_limit']
-        category.save(update_fields=['sub_budget_limit'])
-
-        period = request.query_params.get('period', 'month')
-        return Response(CategorySerializer(category, context={'period': period}).data)
-
     def delete(self, request, pk):
         try:
             budget = _get_budget(request)
@@ -634,6 +613,9 @@ class SubBudgetListView(APIView):
             budget=budget,
             name=data['name'],
             limit=data.get('limit'),
+            period_type=data.get('period_type', 'none'),
+            period_start=data.get('period_start'),
+            period_days=data.get('period_days'),
         )
 
         if data.get('category_ids'):
@@ -672,6 +654,12 @@ class SubBudgetDetailView(APIView):
             sub_budget.name = data['name']
         if 'limit' in request.data:
             sub_budget.limit = data.get('limit')
+        if 'period_type' in data:
+            sub_budget.period_type = data['period_type']
+        if 'period_start' in request.data:
+            sub_budget.period_start = data.get('period_start')
+        if 'period_days' in request.data:
+            sub_budget.period_days = data.get('period_days')
         sub_budget.save()
 
         if 'category_ids' in data:

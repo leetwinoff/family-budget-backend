@@ -1,8 +1,10 @@
 """
 Currency conversion service and budget initialization helpers.
 """
+import calendar
 import time
 import logging
+from datetime import date, timedelta
 from decimal import Decimal, ROUND_HALF_UP
 from typing import Optional
 
@@ -192,6 +194,63 @@ def get_chat_id(telegram_data: dict) -> int:
         pass
 
     return user_id
+
+
+def _add_months(d: date, months: int) -> date:
+    month = d.month - 1 + months
+    year = d.year + month // 12
+    month = month % 12 + 1
+    day = min(d.day, calendar.monthrange(year, month)[1])
+    return date(year, month, day)
+
+
+def get_current_period_range(period_type: str, period_start: date, period_days: int = None):
+    """Return (start, end) date range for the current recurring budget period."""
+    today = date.today()
+
+    if period_type == 'weekly':
+        weekday = period_start.weekday()
+        days_since = (today.weekday() - weekday) % 7
+        start = today - timedelta(days=days_since)
+        return start, start + timedelta(days=7)
+
+    if period_type == 'monthly':
+        try:
+            start = date(today.year, today.month, period_start.day)
+        except ValueError:
+            start = date(today.year, today.month, calendar.monthrange(today.year, today.month)[1])
+        if today < start:
+            start = _add_months(start, -1)
+        return start, _add_months(start, 1)
+
+    if period_type == 'yearly':
+        try:
+            start = date(today.year, period_start.month, period_start.day)
+        except ValueError:
+            start = date(today.year, period_start.month, calendar.monthrange(today.year, period_start.month)[1])
+        if today < start:
+            start = start.replace(year=today.year - 1)
+        return start, _add_months(start, 12)
+
+    if period_type == 'half_year':
+        months_diff = (today.year - period_start.year) * 12 + (today.month - period_start.month)
+        if today.day < period_start.day:
+            months_diff -= 1
+        periods_elapsed = max(0, months_diff // 6)
+        start = _add_months(period_start, 6 * periods_elapsed)
+        if today < start:
+            start = _add_months(period_start, 6 * max(0, periods_elapsed - 1))
+        return start, _add_months(start, 6)
+
+    if period_type == 'custom' and period_days:
+        days_since = (today - period_start).days
+        if days_since < 0:
+            return period_start, period_start + timedelta(days=period_days)
+        n = days_since // period_days
+        start = period_start + timedelta(days=period_days * n)
+        return start, start + timedelta(days=period_days)
+
+    return None, None
 
 
 def get_user_display_name(user: dict) -> str:
