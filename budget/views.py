@@ -17,7 +17,6 @@ from .serializers import (
     CategoryCreateSerializer,
     CurrencySerializer,
     SetBaseCurrencySerializer,
-    SetCategoryLimitSerializer,
     SetTotalBudgetSerializer,
     SubBudgetSerializer,
     SubBudgetCreateSerializer,
@@ -588,7 +587,19 @@ class BudgetMembersView(APIView):
             .order_by('username')
         )
 
-        members = [{'user_id': r['user_id'], 'username': r['username']} for r in user_rows]
+        user_ids = [r['user_id'] for r in user_rows]
+        photo_map = {
+            u.user_id: u.photo_url
+            for u in TelegramUser.objects.filter(user_id__in=user_ids)
+        }
+        members = [
+            {
+                'user_id': r['user_id'],
+                'username': r['username'],
+                'photo_url': photo_map.get(r['user_id'], ''),
+            }
+            for r in user_rows
+        ]
         return Response(members)
 
 
