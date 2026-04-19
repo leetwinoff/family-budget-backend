@@ -18,6 +18,11 @@ urlpatterns = [
     path('sub-budgets/<int:pk>',      views.SubBudgetDetailView.as_view(),  name='sub-budget-detail'),
     path('sub-categories',            views.SubCategoryListView.as_view(),  name='sub-categories'),
     path('sub-categories/<int:pk>',   views.SubCategoryDetailView.as_view(), name='sub-category-detail'),
+    # Wishlist
+    path('wishes',                   views.WishListView.as_view(),          name='wishes'),
+    path('wishes/<int:pk>',          views.WishDetailView.as_view(),        name='wish-detail'),
+    path('wishes/<int:pk>/reserve',  views.WishReserveView.as_view(),       name='wish-reserve'),
+    path('wishes/<int:pk>/fulfill',  views.WishFulfillView.as_view(),       name='wish-fulfill'),
     # Bot-internal endpoints (X-Bot-Token auth)
     path('bot/invite',                views.BotInviteCreateView.as_view(),  name='bot-invite'),
     path('bot/join',                  views.BotInviteJoinView.as_view(),    name='bot-join'),

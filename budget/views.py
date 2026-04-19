@@ -9,7 +9,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework import status
 
-from .models import Budget, BudgetInvite, Category, SubBudget, SubCategory, Tag, Transaction, TelegramUser, UserBudgetLink
+from .models import Budget, BudgetInvite, Category, SubBudget, SubCategory, Tag, Transaction, TelegramUser, UserBudgetLink, WishItem
 from .serializers import (
     BudgetSerializer,
     BalanceSerializer,
@@ -27,6 +27,8 @@ from .serializers import (
     TransactionSerializer,
     TransactionCreateSerializer,
     TransactionUpdateSerializer,
+    WishItemSerializer,
+    WishItemCreateSerializer,
 )
 from .services import (
     convert_amount,
@@ -749,6 +751,115 @@ class SubCategoryDetailView(APIView):
 
         sub_cat.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+# ---------------------------------------------------------------------------
+# GET/POST /api/wishes   DELETE/PATCH /api/wishes/<id>
+# ---------------------------------------------------------------------------
+
+class WishListView(APIView):
+
+    def get(self, request):
+        try:
+            budget = _get_budget(request)
+        except Budget.DoesNotExist:
+            return Response({'detail': 'Budget not found.'}, status=404)
+
+        wishes = budget.wishes.all()
+        return Response(WishItemSerializer(wishes, many=True).data)
+
+    def post(self, request):
+        try:
+            budget = _get_budget(request)
+        except Budget.DoesNotExist:
+            return Response({'detail': 'Budget not found.'}, status=404)
+
+        user_id = request.telegram_data.get('user', {}).get('id')
+        serializer = WishItemCreateSerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+        d = serializer.validated_data
+        wish = WishItem.objects.create(
+            budget=budget,
+            created_by=user_id,
+            title=d['title'],
+            description=d.get('description', ''),
+            link=d.get('link', ''),
+            price=d.get('price'),
+            currency=d.get('currency', ''),
+            image_url=d.get('image_url', ''),
+        )
+        return Response(WishItemSerializer(wish).data, status=status.HTTP_201_CREATED)
+
+
+class WishDetailView(APIView):
+
+    def delete(self, request, pk):
+        try:
+            budget = _get_budget(request)
+        except Budget.DoesNotExist:
+            return Response({'detail': 'Budget not found.'}, status=404)
+
+        user_id = request.telegram_data.get('user', {}).get('id')
+        try:
+            wish = budget.wishes.get(pk=pk)
+        except WishItem.DoesNotExist:
+            return Response({'detail': 'Not found.'}, status=404)
+
+        if wish.created_by != user_id:
+            return Response({'detail': 'You can only delete your own wishes.'}, status=403)
+
+        wish.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class WishReserveView(APIView):
+
+    def post(self, request, pk):
+        try:
+            budget = _get_budget(request)
+        except Budget.DoesNotExist:
+            return Response({'detail': 'Budget not found.'}, status=404)
+
+        user_id = request.telegram_data.get('user', {}).get('id')
+        try:
+            wish = budget.wishes.get(pk=pk)
+        except WishItem.DoesNotExist:
+            return Response({'detail': 'Not found.'}, status=404)
+
+        if wish.is_fulfilled:
+            return Response({'detail': 'Cannot reserve a fulfilled wish.'}, status=400)
+
+        if wish.created_by == user_id:
+            return Response({'detail': 'Cannot reserve your own wish.'}, status=400)
+
+        if wish.is_reserved and wish.reserved_by == user_id:
+            wish.is_reserved = False
+            wish.reserved_by = None
+        else:
+            wish.is_reserved = True
+            wish.reserved_by = user_id
+        wish.save()
+        return Response(WishItemSerializer(wish).data)
+
+
+class WishFulfillView(APIView):
+
+    def post(self, request, pk):
+        try:
+            budget = _get_budget(request)
+        except Budget.DoesNotExist:
+            return Response({'detail': 'Budget not found.'}, status=404)
+
+        try:
+            wish = budget.wishes.get(pk=pk)
+        except WishItem.DoesNotExist:
+            return Response({'detail': 'Not found.'}, status=404)
+
+        wish.is_fulfilled = not wish.is_fulfilled
+        wish.save()
+        return Response(WishItemSerializer(wish).data)
 
 
 # ---------------------------------------------------------------------------

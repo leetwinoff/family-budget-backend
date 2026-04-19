@@ -2,7 +2,7 @@ from decimal import Decimal
 
 from rest_framework import serializers
 
-from .models import Budget, Category, SubBudget, SubCategory, Tag, Transaction, TelegramUser
+from .models import Budget, Category, SubBudget, SubCategory, Tag, Transaction, TelegramUser, WishItem
 from .services import SUPPORTED_CURRENCY_CODES
 
 
@@ -237,4 +237,26 @@ class SubBudgetCreateSerializer(serializers.Serializer):
     period_days = serializers.IntegerField(required=False, allow_null=True, default=None, min_value=1)
 
     def validate_name(self, value):
+        return value.strip()
+
+
+class WishItemSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = WishItem
+        fields = [
+            'id', 'created_by', 'title', 'description', 'link',
+            'price', 'currency', 'image_url',
+            'is_reserved', 'reserved_by', 'is_fulfilled', 'created_at',
+        ]
+
+
+class WishItemCreateSerializer(serializers.Serializer):
+    title = serializers.CharField(max_length=256)
+    description = serializers.CharField(max_length=1000, required=False, allow_blank=True, default='')
+    link = serializers.CharField(max_length=2000, required=False, allow_blank=True, default='')
+    price = serializers.DecimalField(max_digits=14, decimal_places=2, allow_null=True, required=False, default=None)
+    currency = serializers.CharField(max_length=3, required=False, allow_blank=True, default='')
+    image_url = serializers.CharField(max_length=2000, required=False, allow_blank=True, default='')
+
+    def validate_title(self, value):
         return value.strip()

@@ -126,6 +126,27 @@ class SubBudget(models.Model):
         return f'SubBudget({self.name}, budget={self.budget_id})'
 
 
+class WishItem(models.Model):
+    budget = models.ForeignKey(Budget, on_delete=models.CASCADE, related_name='wishes')
+    created_by = models.BigIntegerField()
+    title = models.CharField(max_length=256)
+    description = models.TextField(blank=True, default='')
+    link = models.URLField(max_length=2000, blank=True, default='')
+    price = models.DecimalField(max_digits=14, decimal_places=2, null=True, blank=True)
+    currency = models.CharField(max_length=3, blank=True, default='')
+    image_url = models.URLField(max_length=2000, blank=True, default='')
+    is_reserved = models.BooleanField(default=False)
+    reserved_by = models.BigIntegerField(null=True, blank=True)
+    is_fulfilled = models.BooleanField(default=False)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f'WishItem({self.title}, by={self.created_by})'
+
+
 class UserBudgetLink(models.Model):
     """
     Links a Telegram user to a shared budget in a private-chat context.
