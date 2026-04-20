@@ -21,7 +21,6 @@ urlpatterns = [
     # Wishlist
     path('wishes',                   views.WishListView.as_view(),          name='wishes'),
     path('wishes/<int:pk>',          views.WishDetailView.as_view(),        name='wish-detail'),
-    path('wishes/<int:pk>/reserve',  views.WishReserveView.as_view(),       name='wish-reserve'),
     path('wishes/<int:pk>/fulfill',  views.WishFulfillView.as_view(),       name='wish-fulfill'),
     # Bot-internal endpoints (X-Bot-Token auth)
     path('bot/invite',                views.BotInviteCreateView.as_view(),  name='bot-invite'),

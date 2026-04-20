@@ -127,24 +127,32 @@ class SubBudget(models.Model):
 
 
 class WishItem(models.Model):
+    STATUS_ACTIVE = 'active'
+    STATUS_FULFILLED = 'fulfilled'
+    STATUS_CHOICES = [
+        (STATUS_ACTIVE, 'Active'),
+        (STATUS_FULFILLED, 'Fulfilled'),
+    ]
+
     budget = models.ForeignKey(Budget, on_delete=models.CASCADE, related_name='wishes')
     created_by = models.BigIntegerField()
-    title = models.CharField(max_length=256)
+    name = models.CharField(max_length=256)
     description = models.TextField(blank=True, default='')
     link = models.URLField(max_length=2000, blank=True, default='')
     price = models.DecimalField(max_digits=14, decimal_places=2, null=True, blank=True)
     currency = models.CharField(max_length=3, blank=True, default='')
-    image_url = models.URLField(max_length=2000, blank=True, default='')
-    is_reserved = models.BooleanField(default=False)
-    reserved_by = models.BigIntegerField(null=True, blank=True)
-    is_fulfilled = models.BooleanField(default=False)
+    image_url = models.TextField(blank=True, default='')
+    status = models.CharField(max_length=16, choices=STATUS_CHOICES, default=STATUS_ACTIVE)
+    sort_order = models.IntegerField(default=0)
+    fulfilled_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
-        ordering = ['-created_at']
+        ordering = ['sort_order', '-created_at']
 
     def __str__(self):
-        return f'WishItem({self.title}, by={self.created_by})'
+        return f'WishItem({self.name}, by={self.created_by})'
 
 
 class UserBudgetLink(models.Model):

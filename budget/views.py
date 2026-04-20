@@ -29,6 +29,7 @@ from .serializers import (
     TransactionUpdateSerializer,
     WishItemSerializer,
     WishItemCreateSerializer,
+    WishItemUpdateSerializer,
 )
 from .services import (
     convert_amount,
@@ -754,7 +755,7 @@ class SubCategoryDetailView(APIView):
 
 
 # ---------------------------------------------------------------------------
-# GET/POST /api/wishes   DELETE/PATCH /api/wishes/<id>
+# GET/POST /api/wishes   PATCH/DELETE /api/wishes/<id>   PATCH /api/wishes/<id>/fulfill
 # ---------------------------------------------------------------------------
 
 class WishListView(APIView):
@@ -783,7 +784,7 @@ class WishListView(APIView):
         wish = WishItem.objects.create(
             budget=budget,
             created_by=user_id,
-            title=d['title'],
+            name=d['name'],
             description=d.get('description', ''),
             link=d.get('link', ''),
             price=d.get('price'),
@@ -795,58 +796,44 @@ class WishListView(APIView):
 
 class WishDetailView(APIView):
 
+    def patch(self, request, pk):
+        try:
+            budget = _get_budget(request)
+        except Budget.DoesNotExist:
+            return Response({'detail': 'Budget not found.'}, status=404)
+
+        try:
+            wish = budget.wishes.get(pk=pk)
+        except WishItem.DoesNotExist:
+            return Response({'detail': 'Not found.'}, status=404)
+
+        serializer = WishItemUpdateSerializer(data=request.data, partial=True)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+        for field, value in serializer.validated_data.items():
+            setattr(wish, field, value)
+        wish.save()
+        return Response(WishItemSerializer(wish).data)
+
     def delete(self, request, pk):
         try:
             budget = _get_budget(request)
         except Budget.DoesNotExist:
             return Response({'detail': 'Budget not found.'}, status=404)
 
-        user_id = request.telegram_data.get('user', {}).get('id')
         try:
             wish = budget.wishes.get(pk=pk)
         except WishItem.DoesNotExist:
             return Response({'detail': 'Not found.'}, status=404)
-
-        if wish.created_by != user_id:
-            return Response({'detail': 'You can only delete your own wishes.'}, status=403)
 
         wish.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
-class WishReserveView(APIView):
-
-    def post(self, request, pk):
-        try:
-            budget = _get_budget(request)
-        except Budget.DoesNotExist:
-            return Response({'detail': 'Budget not found.'}, status=404)
-
-        user_id = request.telegram_data.get('user', {}).get('id')
-        try:
-            wish = budget.wishes.get(pk=pk)
-        except WishItem.DoesNotExist:
-            return Response({'detail': 'Not found.'}, status=404)
-
-        if wish.is_fulfilled:
-            return Response({'detail': 'Cannot reserve a fulfilled wish.'}, status=400)
-
-        if wish.created_by == user_id:
-            return Response({'detail': 'Cannot reserve your own wish.'}, status=400)
-
-        if wish.is_reserved and wish.reserved_by == user_id:
-            wish.is_reserved = False
-            wish.reserved_by = None
-        else:
-            wish.is_reserved = True
-            wish.reserved_by = user_id
-        wish.save()
-        return Response(WishItemSerializer(wish).data)
-
-
 class WishFulfillView(APIView):
 
-    def post(self, request, pk):
+    def patch(self, request, pk):
         try:
             budget = _get_budget(request)
         except Budget.DoesNotExist:
@@ -857,7 +844,13 @@ class WishFulfillView(APIView):
         except WishItem.DoesNotExist:
             return Response({'detail': 'Not found.'}, status=404)
 
-        wish.is_fulfilled = not wish.is_fulfilled
+        from django.utils import timezone
+        if wish.status == WishItem.STATUS_ACTIVE:
+            wish.status = WishItem.STATUS_FULFILLED
+            wish.fulfilled_at = timezone.now()
+        else:
+            wish.status = WishItem.STATUS_ACTIVE
+            wish.fulfilled_at = None
         wish.save()
         return Response(WishItemSerializer(wish).data)
 

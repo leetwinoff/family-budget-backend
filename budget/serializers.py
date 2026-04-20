@@ -244,19 +244,31 @@ class WishItemSerializer(serializers.ModelSerializer):
     class Meta:
         model = WishItem
         fields = [
-            'id', 'created_by', 'title', 'description', 'link',
+            'id', 'created_by', 'name', 'description', 'link',
             'price', 'currency', 'image_url',
-            'is_reserved', 'reserved_by', 'is_fulfilled', 'created_at',
+            'status', 'sort_order', 'fulfilled_at', 'created_at', 'updated_at',
         ]
 
 
 class WishItemCreateSerializer(serializers.Serializer):
-    title = serializers.CharField(max_length=256)
+    name = serializers.CharField(max_length=256)
     description = serializers.CharField(max_length=1000, required=False, allow_blank=True, default='')
     link = serializers.CharField(max_length=2000, required=False, allow_blank=True, default='')
     price = serializers.DecimalField(max_digits=14, decimal_places=2, allow_null=True, required=False, default=None)
     currency = serializers.CharField(max_length=3, required=False, allow_blank=True, default='')
-    image_url = serializers.CharField(max_length=2000, required=False, allow_blank=True, default='')
+    image_url = serializers.CharField(required=False, allow_blank=True, default='')
 
-    def validate_title(self, value):
+    def validate_name(self, value):
+        return value.strip()
+
+
+class WishItemUpdateSerializer(serializers.Serializer):
+    name = serializers.CharField(max_length=256, required=False)
+    description = serializers.CharField(max_length=1000, required=False, allow_blank=True)
+    link = serializers.CharField(max_length=2000, required=False, allow_blank=True)
+    price = serializers.DecimalField(max_digits=14, decimal_places=2, allow_null=True, required=False)
+    currency = serializers.CharField(max_length=3, required=False, allow_blank=True)
+    image_url = serializers.CharField(required=False, allow_blank=True)
+
+    def validate_name(self, value):
         return value.strip()
