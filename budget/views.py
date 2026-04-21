@@ -855,6 +855,32 @@ class WishFulfillView(APIView):
         return Response(WishItemSerializer(wish).data)
 
 
+class WishReorderView(APIView):
+
+    def patch(self, request):
+        try:
+            budget = _get_budget(request)
+        except Budget.DoesNotExist:
+            return Response({'detail': 'Budget not found.'}, status=404)
+
+        items = request.data.get('items', [])
+        if not isinstance(items, list):
+            return Response({'detail': 'items must be a list.'}, status=400)
+
+        wish_ids = [item.get('id') for item in items if isinstance(item, dict)]
+        wishes = {w.id: w for w in budget.wishes.filter(id__in=wish_ids)}
+
+        to_update = []
+        for item in items:
+            wish = wishes.get(item.get('id'))
+            if wish is not None:
+                wish.sort_order = item.get('sort_order', 0)
+                to_update.append(wish)
+
+        WishItem.objects.bulk_update(to_update, ['sort_order'])
+        return Response({'updated': len(to_update)})
+
+
 # ---------------------------------------------------------------------------
 # Bot-internal endpoints (authenticated by X-Bot-Token header)
 # ---------------------------------------------------------------------------

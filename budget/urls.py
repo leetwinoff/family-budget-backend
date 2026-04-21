@@ -20,6 +20,7 @@ urlpatterns = [
     path('sub-categories/<int:pk>',   views.SubCategoryDetailView.as_view(), name='sub-category-detail'),
     # Wishlist
     path('wishes',                   views.WishListView.as_view(),          name='wishes'),
+    path('wishes/reorder',           views.WishReorderView.as_view(),       name='wish-reorder'),
     path('wishes/<int:pk>',          views.WishDetailView.as_view(),        name='wish-detail'),
     path('wishes/<int:pk>/fulfill',  views.WishFulfillView.as_view(),       name='wish-fulfill'),
     # Bot-internal endpoints (X-Bot-Token auth)
