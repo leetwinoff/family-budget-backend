@@ -9,7 +9,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework import status
 
-from .models import Budget, BudgetInvite, Category, SubBudget, SubCategory, Tag, Transaction, TelegramUser, UserBudgetLink, WishItem
+from .models import Budget, BudgetInvite, Category, GoalSession, MonthlyConfig, SavingsEvent, SubBudget, SubCategory, Tag, Transaction, TelegramUser, UserBudgetLink, WishItem
 from .serializers import (
     BudgetSerializer,
     BalanceSerializer,
@@ -30,12 +30,25 @@ from .serializers import (
     WishItemSerializer,
     WishItemCreateSerializer,
     WishItemUpdateSerializer,
+    GoalSessionSerializer,
+    GoalStatusSerializer,
+    GoalSessionCreateSerializer,
+    SavingsEventSerializer,
+    SavingsEventCreateSerializer,
+    MonthlyConfigSerializer,
+    MonthlyConfigUpdateSerializer,
 )
 from .services import (
     convert_amount,
     create_default_categories,
     get_chat_id,
     get_user_display_name,
+    calculate_daily_surplus,
+    get_current_streak,
+    get_streak_multiplier,
+    get_or_create_monthly_config,
+    create_savings_event,
+    carry_forward_session,
     SUPPORTED_CURRENCIES,
 )
 
@@ -855,32 +868,6 @@ class WishFulfillView(APIView):
         return Response(WishItemSerializer(wish).data)
 
 
-class WishReorderView(APIView):
-
-    def patch(self, request):
-        try:
-            budget = _get_budget(request)
-        except Budget.DoesNotExist:
-            return Response({'detail': 'Budget not found.'}, status=404)
-
-        items = request.data.get('items', [])
-        if not isinstance(items, list):
-            return Response({'detail': 'items must be a list.'}, status=400)
-
-        wish_ids = [item.get('id') for item in items if isinstance(item, dict)]
-        wishes = {w.id: w for w in budget.wishes.filter(id__in=wish_ids)}
-
-        to_update = []
-        for item in items:
-            wish = wishes.get(item.get('id'))
-            if wish is not None:
-                wish.sort_order = item.get('sort_order', 0)
-                to_update.append(wish)
-
-        WishItem.objects.bulk_update(to_update, ['sort_order'])
-        return Response({'updated': len(to_update)})
-
-
 # ---------------------------------------------------------------------------
 # Bot-internal endpoints (authenticated by X-Bot-Token header)
 # ---------------------------------------------------------------------------
@@ -968,3 +955,212 @@ class BotInviteJoinView(APIView):
             'status': 'joined',
             'budget_chat_id': invite.budget.chat_id,
         })
+
+
+# ---------------------------------------------------------------------------
+# Goal Engine — Phase 1
+# ---------------------------------------------------------------------------
+
+class GoalStatusView(APIView):
+    """GET /api/goal/status — active session, streak, split config."""
+
+    def get(self, request):
+        try:
+            budget = _get_budget(request)
+        except Budget.DoesNotExist:
+            return Response({'error': 'Budget not found'}, status=status.HTTP_404_NOT_FOUND)
+
+        try:
+            session = GoalSession.objects.select_related('wish_item').get(
+                budget=budget, status=GoalSession.STATUS_ACTIVE
+            )
+        except GoalSession.DoesNotExist:
+            session = None
+
+        streak = get_current_streak(budget)
+        multiplier = get_streak_multiplier(streak)
+        month_str = date.today().strftime('%Y-%m')
+        config = get_or_create_monthly_config(budget, month_str)
+        from decimal import Decimal
+        effective_pct = min(Decimal(str(config.base_split_pct)) * multiplier, Decimal('95'))
+
+        data = {
+            'session': GoalSessionSerializer(session).data if session else None,
+            'current_streak': streak,
+            'effective_split_pct': effective_pct,
+            'base_split_pct': config.base_split_pct,
+        }
+        return Response(GoalStatusSerializer(data).data)
+
+
+class GoalSessionListView(APIView):
+    """
+    GET  /api/goal/sessions — list all sessions (history)
+    POST /api/goal/sessions — start a new goal session for a wish item
+    """
+
+    def get(self, request):
+        try:
+            budget = _get_budget(request)
+        except Budget.DoesNotExist:
+            return Response({'error': 'Budget not found'}, status=status.HTTP_404_NOT_FOUND)
+
+        sessions = GoalSession.objects.filter(budget=budget).select_related('wish_item')
+        return Response(GoalSessionSerializer(sessions, many=True).data)
+
+    def post(self, request):
+        try:
+            budget = _get_budget(request)
+        except Budget.DoesNotExist:
+            return Response({'error': 'Budget not found'}, status=status.HTTP_404_NOT_FOUND)
+
+        ser = GoalSessionCreateSerializer(data=request.data)
+        if not ser.is_valid():
+            return Response(ser.errors, status=status.HTTP_400_BAD_REQUEST)
+
+        if GoalSession.objects.filter(budget=budget, status=GoalSession.STATUS_ACTIVE).exists():
+            return Response(
+                {'error': 'An active goal session already exists. Complete or abandon it first.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            wish_item = WishItem.objects.get(id=ser.validated_data['wish_item_id'], budget=budget)
+        except WishItem.DoesNotExist:
+            return Response({'error': 'Wish item not found'}, status=status.HTTP_404_NOT_FOUND)
+
+        if not wish_item.price:
+            return Response({'error': 'Wish item has no price set'}, status=status.HTTP_400_BAD_REQUEST)
+
+        from .services import convert_amount as _convert
+        from decimal import Decimal
+        target = _convert(
+            Decimal(str(wish_item.price)),
+            wish_item.currency or budget.base_currency,
+            budget.base_currency,
+        )
+
+        session = GoalSession.objects.create(
+            budget=budget,
+            wish_item=wish_item,
+            target_amount=target,
+            accumulated=Decimal('0'),
+            status=GoalSession.STATUS_ACTIVE,
+        )
+        wish_item.status = WishItem.STATUS_ACTIVE
+        wish_item.save(update_fields=['status'])
+
+        return Response(GoalSessionSerializer(session).data, status=status.HTTP_201_CREATED)
+
+
+class GoalSessionAbandonView(APIView):
+    """POST /api/goal/sessions/<pk>/abandon — abandon active session with 10% tax."""
+
+    def post(self, request, pk):
+        try:
+            budget = _get_budget(request)
+        except Budget.DoesNotExist:
+            return Response({'error': 'Budget not found'}, status=status.HTTP_404_NOT_FOUND)
+
+        try:
+            session = GoalSession.objects.get(pk=pk, budget=budget, status=GoalSession.STATUS_ACTIVE)
+        except GoalSession.DoesNotExist:
+            return Response({'error': 'Active session not found'}, status=status.HTTP_404_NOT_FOUND)
+
+        from decimal import Decimal
+        tax = (Decimal(str(session.accumulated)) * Decimal('0.10')).quantize(Decimal('0.01'))
+        session.accumulated = Decimal(str(session.accumulated)) - tax
+        session.status = GoalSession.STATUS_ABANDONED
+        session.save(update_fields=['accumulated', 'status'])
+
+        return Response({'status': 'abandoned', 'tax_deducted': str(tax)})
+
+
+class GoalCarryForwardView(APIView):
+    """POST /api/goal/carry-forward — carry active session into next month."""
+
+    def post(self, request):
+        try:
+            budget = _get_budget(request)
+        except Budget.DoesNotExist:
+            return Response({'error': 'Budget not found'}, status=status.HTTP_404_NOT_FOUND)
+
+        try:
+            session = GoalSession.objects.get(budget=budget, status=GoalSession.STATUS_ACTIVE)
+        except GoalSession.DoesNotExist:
+            return Response({'error': 'No active session'}, status=status.HTTP_404_NOT_FOUND)
+
+        new_session = carry_forward_session(session)
+        return Response(GoalSessionSerializer(new_session).data, status=status.HTTP_201_CREATED)
+
+
+class SavingsEventListView(APIView):
+    """
+    GET  /api/goal/events — list savings events for the active session
+    POST /api/goal/events — record a savings event for a given date (default: today)
+    """
+
+    def get(self, request):
+        try:
+            budget = _get_budget(request)
+        except Budget.DoesNotExist:
+            return Response({'error': 'Budget not found'}, status=status.HTTP_404_NOT_FOUND)
+
+        events = SavingsEvent.objects.filter(budget=budget).order_by('-date')[:90]
+        return Response(SavingsEventSerializer(events, many=True).data)
+
+    def post(self, request):
+        try:
+            budget = _get_budget(request)
+        except Budget.DoesNotExist:
+            return Response({'error': 'Budget not found'}, status=status.HTTP_404_NOT_FOUND)
+
+        ser = SavingsEventCreateSerializer(data=request.data)
+        if not ser.is_valid():
+            return Response(ser.errors, status=status.HTTP_400_BAD_REQUEST)
+
+        event_date = ser.validated_data.get('date') or date.today()
+        event = create_savings_event(budget, event_date)
+
+        if event is None:
+            return Response(
+                {'detail': 'No surplus or no active session — event not created.'},
+                status=status.HTTP_200_OK,
+            )
+
+        return Response(SavingsEventSerializer(event).data, status=status.HTTP_201_CREATED)
+
+
+class GoalConfigView(APIView):
+    """
+    GET /api/goal/config       — current month's split config
+    PUT /api/goal/config       — update base_split_pct
+    """
+
+    def _get_config(self, budget):
+        month_str = date.today().strftime('%Y-%m')
+        return get_or_create_monthly_config(budget, month_str)
+
+    def get(self, request):
+        try:
+            budget = _get_budget(request)
+        except Budget.DoesNotExist:
+            return Response({'error': 'Budget not found'}, status=status.HTTP_404_NOT_FOUND)
+
+        config = self._get_config(budget)
+        return Response(MonthlyConfigSerializer(config).data)
+
+    def put(self, request):
+        try:
+            budget = _get_budget(request)
+        except Budget.DoesNotExist:
+            return Response({'error': 'Budget not found'}, status=status.HTTP_404_NOT_FOUND)
+
+        ser = MonthlyConfigUpdateSerializer(data=request.data)
+        if not ser.is_valid():
+            return Response(ser.errors, status=status.HTTP_400_BAD_REQUEST)
+
+        config = self._get_config(budget)
+        config.base_split_pct = ser.validated_data['base_split_pct']
+        config.save(update_fields=['base_split_pct'])
+        return Response(MonthlyConfigSerializer(config).data)

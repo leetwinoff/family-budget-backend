@@ -20,10 +20,16 @@ urlpatterns = [
     path('sub-categories/<int:pk>',   views.SubCategoryDetailView.as_view(), name='sub-category-detail'),
     # Wishlist
     path('wishes',                   views.WishListView.as_view(),          name='wishes'),
-    path('wishes/reorder',           views.WishReorderView.as_view(),       name='wish-reorder'),
     path('wishes/<int:pk>',          views.WishDetailView.as_view(),        name='wish-detail'),
     path('wishes/<int:pk>/fulfill',  views.WishFulfillView.as_view(),       name='wish-fulfill'),
     # Bot-internal endpoints (X-Bot-Token auth)
     path('bot/invite',                views.BotInviteCreateView.as_view(),  name='bot-invite'),
     path('bot/join',                  views.BotInviteJoinView.as_view(),    name='bot-join'),
+    # Goal engine (Phase 1)
+    path('goal/status',               views.GoalStatusView.as_view(),            name='goal-status'),
+    path('goal/sessions',             views.GoalSessionListView.as_view(),        name='goal-sessions'),
+    path('goal/sessions/<int:pk>/abandon', views.GoalSessionAbandonView.as_view(), name='goal-session-abandon'),
+    path('goal/carry-forward',        views.GoalCarryForwardView.as_view(),       name='goal-carry-forward'),
+    path('goal/events',               views.SavingsEventListView.as_view(),       name='goal-events'),
+    path('goal/config',               views.GoalConfigView.as_view(),             name='goal-config'),
 ]

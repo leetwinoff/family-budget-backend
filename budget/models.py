@@ -129,9 +129,15 @@ class SubBudget(models.Model):
 class WishItem(models.Model):
     STATUS_ACTIVE = 'active'
     STATUS_FULFILLED = 'fulfilled'
+    STATUS_LOCKED = 'locked'
+    STATUS_DONE = 'done'
+    STATUS_POOL = 'pool'
     STATUS_CHOICES = [
         (STATUS_ACTIVE, 'Active'),
         (STATUS_FULFILLED, 'Fulfilled'),
+        (STATUS_LOCKED, 'Locked'),
+        (STATUS_DONE, 'Done (goal funded)'),
+        (STATUS_POOL, 'Pool (goal-ready)'),
     ]
 
     budget = models.ForeignKey(Budget, on_delete=models.CASCADE, related_name='wishes')
@@ -144,6 +150,8 @@ class WishItem(models.Model):
     image_url = models.TextField(blank=True, default='')
     status = models.CharField(max_length=16, choices=STATUS_CHOICES, default=STATUS_ACTIVE)
     sort_order = models.IntegerField(default=0)
+    queue_position = models.IntegerField(null=True, blank=True)
+    goal_ready = models.BooleanField(default=False)
     fulfilled_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -153,6 +161,67 @@ class WishItem(models.Model):
 
     def __str__(self):
         return f'WishItem({self.name}, by={self.created_by})'
+
+
+class GoalSession(models.Model):
+    STATUS_ACTIVE = 'active'
+    STATUS_COMPLETED = 'completed'
+    STATUS_CARRIED = 'carried'
+    STATUS_ABANDONED = 'abandoned'
+    STATUS_CHOICES = [
+        (STATUS_ACTIVE, 'Active'),
+        (STATUS_COMPLETED, 'Completed'),
+        (STATUS_CARRIED, 'Carried forward'),
+        (STATUS_ABANDONED, 'Abandoned'),
+    ]
+
+    budget = models.ForeignKey(Budget, on_delete=models.CASCADE, related_name='goal_sessions')
+    wish_item = models.ForeignKey(WishItem, on_delete=models.CASCADE, related_name='goal_sessions')
+    started_at = models.DateTimeField(auto_now_add=True)
+    completed_at = models.DateTimeField(null=True, blank=True)
+    target_amount = models.DecimalField(max_digits=14, decimal_places=2)
+    accumulated = models.DecimalField(max_digits=14, decimal_places=2, default=0)
+    status = models.CharField(max_length=16, choices=STATUS_CHOICES, default=STATUS_ACTIVE)
+
+    class Meta:
+        ordering = ['-started_at']
+
+    def __str__(self):
+        return f'GoalSession({self.wish_item.name}, {self.status}, {self.accumulated}/{self.target_amount})'
+
+
+class SavingsEvent(models.Model):
+    budget = models.ForeignKey(Budget, on_delete=models.CASCADE, related_name='savings_events')
+    goal_session = models.ForeignKey(GoalSession, on_delete=models.CASCADE, related_name='savings_events')
+    date = models.DateField()
+    daily_surplus = models.DecimalField(max_digits=14, decimal_places=2)
+    wish_split_pct = models.DecimalField(max_digits=5, decimal_places=2)
+    wish_credit = models.DecimalField(max_digits=14, decimal_places=2)
+    reserve_credit = models.DecimalField(max_digits=14, decimal_places=2)
+    streak_day = models.IntegerField(default=0)
+    multiplier = models.DecimalField(max_digits=4, decimal_places=2, default=1)
+    is_surprise_day = models.BooleanField(default=False)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-date']
+        unique_together = ('budget', 'date')
+
+    def __str__(self):
+        return f'SavingsEvent({self.date}, credit={self.wish_credit})'
+
+
+class MonthlyConfig(models.Model):
+    budget = models.ForeignKey(Budget, on_delete=models.CASCADE, related_name='monthly_configs')
+    month = models.CharField(max_length=7)  # YYYY-MM
+    base_split_pct = models.DecimalField(max_digits=5, decimal_places=2, default=60)
+    surprise_day = models.IntegerField(null=True, blank=True)
+
+    class Meta:
+        unique_together = ('budget', 'month')
+
+    def __str__(self):
+        return f'MonthlyConfig({self.budget_id}, {self.month}, split={self.base_split_pct}%)'
 
 
 class UserBudgetLink(models.Model):

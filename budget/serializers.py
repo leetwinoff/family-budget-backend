@@ -2,7 +2,7 @@ from decimal import Decimal
 
 from rest_framework import serializers
 
-from .models import Budget, Category, SubBudget, SubCategory, Tag, Transaction, TelegramUser, WishItem
+from .models import Budget, Category, GoalSession, MonthlyConfig, SavingsEvent, SubBudget, SubCategory, Tag, Transaction, TelegramUser, WishItem
 from .services import SUPPORTED_CURRENCY_CODES
 
 
@@ -269,6 +269,78 @@ class WishItemUpdateSerializer(serializers.Serializer):
     price = serializers.DecimalField(max_digits=14, decimal_places=2, allow_null=True, required=False)
     currency = serializers.CharField(max_length=3, required=False, allow_blank=True)
     image_url = serializers.CharField(required=False, allow_blank=True)
+    goal_ready = serializers.BooleanField(required=False)
+    queue_position = serializers.IntegerField(required=False, allow_null=True)
+    status = serializers.ChoiceField(
+        choices=[WishItem.STATUS_ACTIVE, WishItem.STATUS_FULFILLED, WishItem.STATUS_LOCKED,
+                 WishItem.STATUS_DONE, WishItem.STATUS_POOL],
+        required=False,
+    )
 
     def validate_name(self, value):
         return value.strip()
+
+
+# ---------------------------------------------------------------------------
+# Goal engine serializers
+# ---------------------------------------------------------------------------
+
+class SavingsEventSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = SavingsEvent
+        fields = [
+            'id', 'date', 'daily_surplus', 'wish_split_pct',
+            'wish_credit', 'reserve_credit', 'streak_day',
+            'multiplier', 'is_surprise_day', 'created_at',
+        ]
+
+
+class GoalSessionSerializer(serializers.ModelSerializer):
+    wish_item_name = serializers.CharField(source='wish_item.name', read_only=True)
+    wish_item_image = serializers.CharField(source='wish_item.image_url', read_only=True)
+    progress_pct = serializers.SerializerMethodField()
+    estimated_days = serializers.SerializerMethodField()
+
+    class Meta:
+        model = GoalSession
+        fields = [
+            'id', 'wish_item', 'wish_item_name', 'wish_item_image',
+            'target_amount', 'accumulated', 'status',
+            'started_at', 'completed_at',
+            'progress_pct', 'estimated_days',
+        ]
+
+    def get_progress_pct(self, obj):
+        if not obj.target_amount or obj.target_amount == 0:
+            return 0
+        pct = float(obj.accumulated) / float(obj.target_amount) * 100
+        return round(min(pct, 100), 1)
+
+    def get_estimated_days(self, obj):
+        from .services import get_estimated_days
+        return get_estimated_days(obj)
+
+
+class GoalStatusSerializer(serializers.Serializer):
+    session = GoalSessionSerializer(allow_null=True)
+    current_streak = serializers.IntegerField()
+    effective_split_pct = serializers.DecimalField(max_digits=5, decimal_places=2)
+    base_split_pct = serializers.DecimalField(max_digits=5, decimal_places=2)
+
+
+class GoalSessionCreateSerializer(serializers.Serializer):
+    wish_item_id = serializers.IntegerField()
+
+
+class SavingsEventCreateSerializer(serializers.Serializer):
+    date = serializers.DateField(required=False)
+
+
+class MonthlyConfigSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = MonthlyConfig
+        fields = ['month', 'base_split_pct']
+
+
+class MonthlyConfigUpdateSerializer(serializers.Serializer):
+    base_split_pct = serializers.DecimalField(max_digits=5, decimal_places=2, min_value=Decimal('1'), max_value=Decimal('95'))

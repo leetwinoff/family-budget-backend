@@ -260,3 +260,259 @@ def get_user_display_name(user: dict) -> str:
     username = user.get('username', '')
     full = f'{first} {last}'.strip()
     return full or username or str(user.get('id', 'Unknown'))
+
+
+# ---------------------------------------------------------------------------
+# Gamification — Phase 1: Core Savings Engine
+# ---------------------------------------------------------------------------
+
+def calculate_daily_surplus(budget, today: date) -> Decimal:
+    """
+    Sum max(daily_allowance - today_spend, 0) across all active SubBudgets
+    that have a period (weekly or monthly). Falls back to total_budget / 30
+    if no periodic sub-budgets exist.
+    """
+    from budget.models import SubBudget, Transaction
+
+    sub_budgets = SubBudget.objects.filter(
+        budget=budget,
+        period_type__in=['weekly', 'monthly'],
+        limit__isnull=False,
+    ).prefetch_related('categories', 'tags')
+
+    if not sub_budgets.exists():
+        if budget.total_budget:
+            import calendar as _cal
+            days_in_month = _cal.monthrange(today.year, today.month)[1]
+            daily_allowance = Decimal(str(budget.total_budget)) / days_in_month
+            today_spend = Transaction.objects.filter(
+                budget=budget,
+                type='expense',
+                created_at__date=today,
+            ).aggregate(total=__import__('django.db.models', fromlist=['Sum']).Sum('amount_base'))['total'] or Decimal('0')
+            return max(daily_allowance - Decimal(str(today_spend)), Decimal('0'))
+        return Decimal('0')
+
+    from django.db.models import Sum as _Sum
+
+    total_surplus = Decimal('0')
+
+    for sb in sub_budgets:
+        period_start, period_end = get_current_period_range(
+            sb.period_type, sb.period_start, sb.period_days
+        )
+        if period_start is None:
+            continue
+
+        days_remaining = max((period_end - today).days, 1)
+        limit = Decimal(str(sb.limit))
+
+        cat_ids = list(sb.categories.values_list('id', flat=True))
+        tag_ids = list(sb.tags.values_list('id', flat=True))
+
+        period_qs = Transaction.objects.filter(
+            budget=budget,
+            type='expense',
+            created_at__date__gte=period_start,
+            created_at__date__lt=period_end,
+        )
+        if cat_ids and tag_ids:
+            from django.db.models import Q
+            period_qs = period_qs.filter(Q(category_id__in=cat_ids) | Q(tags__id__in=tag_ids)).distinct()
+        elif cat_ids:
+            period_qs = period_qs.filter(category_id__in=cat_ids)
+        elif tag_ids:
+            period_qs = period_qs.filter(tags__id__in=tag_ids).distinct()
+
+        spent_so_far = period_qs.aggregate(total=_Sum('amount_base'))['total'] or Decimal('0')
+        spent_so_far = Decimal(str(spent_so_far))
+        remaining_budget = max(limit - spent_so_far, Decimal('0'))
+        daily_allowance = remaining_budget / days_remaining
+
+        today_qs = period_qs.filter(created_at__date=today)
+        today_spend = today_qs.aggregate(total=_Sum('amount_base'))['total'] or Decimal('0')
+        today_spend = Decimal(str(today_spend))
+
+        surplus = max(daily_allowance - today_spend, Decimal('0'))
+        total_surplus += surplus
+
+    return total_surplus.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
+
+
+def get_streak_multiplier(streak_days: int) -> Decimal:
+    if streak_days >= 7:
+        return Decimal('1.5')
+    if streak_days >= 5:
+        return Decimal('1.35')
+    if streak_days >= 3:
+        return Decimal('1.2')
+    return Decimal('1.0')
+
+
+def get_current_streak(budget) -> int:
+    """
+    Count consecutive days (going back from yesterday) that have a SavingsEvent.
+    Today is not counted — the streak reflects completed past days.
+    """
+    from budget.models import SavingsEvent
+
+    today = date.today()
+    streak = 0
+    check = today - timedelta(days=1)
+
+    existing = set(
+        SavingsEvent.objects.filter(budget=budget)
+        .values_list('date', flat=True)
+    )
+
+    while check in existing:
+        streak += 1
+        check -= timedelta(days=1)
+
+    return streak
+
+
+def get_or_create_monthly_config(budget, month: str):
+    """Return MonthlyConfig for the given YYYY-MM, creating with defaults if missing."""
+    from budget.models import MonthlyConfig
+    import random
+
+    config, created = MonthlyConfig.objects.get_or_create(
+        budget=budget,
+        month=month,
+        defaults={'base_split_pct': Decimal('60'), 'surprise_day': random.randint(5, 25)},
+    )
+    return config
+
+
+def create_savings_event(budget, event_date: date) -> Optional[dict]:
+    """
+    Core daily function. Call once per day after spending is done.
+    - Calculates surplus for event_date
+    - If surplus == 0: no event created, streak implicitly breaks
+    - Applies streak multiplier, splits into wish/reserve credits
+    - Creates SavingsEvent and updates GoalSession.accumulated
+    - Triggers completion check
+    Returns the created SavingsEvent or None if no surplus / no active session.
+    """
+    from budget.models import GoalSession, SavingsEvent
+
+    try:
+        session = GoalSession.objects.get(budget=budget, status=GoalSession.STATUS_ACTIVE)
+    except GoalSession.DoesNotExist:
+        return None
+
+    if SavingsEvent.objects.filter(budget=budget, date=event_date).exists():
+        return None  # already recorded
+
+    surplus = calculate_daily_surplus(budget, event_date)
+    if surplus <= 0:
+        return None  # overspend day — no event, streak broken
+
+    month_str = event_date.strftime('%Y-%m')
+    config = get_or_create_monthly_config(budget, month_str)
+
+    streak = get_current_streak(budget)
+    multiplier = get_streak_multiplier(streak)
+    effective_pct = min(Decimal(str(config.base_split_pct)) * multiplier, Decimal('95'))
+
+    wish_credit = (surplus * effective_pct / Decimal('100')).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
+    reserve_credit = (surplus - wish_credit).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
+
+    is_surprise = (config.surprise_day == event_date.day)
+    if is_surprise:
+        wish_credit = (wish_credit * 2).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
+
+    event = SavingsEvent.objects.create(
+        budget=budget,
+        goal_session=session,
+        date=event_date,
+        daily_surplus=surplus,
+        wish_split_pct=effective_pct,
+        wish_credit=wish_credit,
+        reserve_credit=reserve_credit,
+        streak_day=streak + 1,
+        multiplier=multiplier,
+        is_surprise_day=is_surprise,
+    )
+
+    session.accumulated = (Decimal(str(session.accumulated)) + wish_credit).quantize(
+        Decimal('0.01'), rounding=ROUND_HALF_UP
+    )
+    session.save(update_fields=['accumulated'])
+
+    check_goal_completion(session)
+
+    return event
+
+
+def check_goal_completion(session) -> bool:
+    """If accumulated >= target, mark session and wish item complete, unlock next."""
+    from budget.models import WishItem
+
+    session.refresh_from_db()
+    if Decimal(str(session.accumulated)) >= Decimal(str(session.target_amount)):
+        from django.utils import timezone as _tz
+        session.status = session.STATUS_COMPLETED
+        session.completed_at = _tz.now()
+        session.save(update_fields=['status', 'completed_at'])
+
+        session.wish_item.status = WishItem.STATUS_DONE
+        session.wish_item.fulfilled_at = session.completed_at
+        session.wish_item.save(update_fields=['status', 'fulfilled_at'])
+
+        unlock_next_item(session.budget)
+        return True
+    return False
+
+
+def unlock_next_item(budget) -> bool:
+    """Activate the next locked item in queue. Returns True if one was found."""
+    from budget.models import WishItem
+
+    next_item = (
+        WishItem.objects.filter(budget=budget, status=WishItem.STATUS_LOCKED)
+        .order_by('queue_position')
+        .first()
+    )
+    if next_item:
+        next_item.status = WishItem.STATUS_ACTIVE
+        next_item.save(update_fields=['status'])
+        return True
+    return False
+
+
+def carry_forward_session(session) -> None:
+    """On month flip: mark session carried so accumulated is preserved into next month."""
+    session.status = session.STATUS_CARRIED
+    session.save(update_fields=['status'])
+
+    new_session = session.__class__.objects.create(
+        budget=session.budget,
+        wish_item=session.wish_item,
+        target_amount=session.target_amount,
+        accumulated=session.accumulated,
+        status=session.__class__.STATUS_ACTIVE,
+    )
+    return new_session
+
+
+def get_estimated_days(session) -> Optional[int]:
+    """Estimate days to goal completion based on last 7 days of wish_credits."""
+    from budget.models import SavingsEvent
+
+    events = list(
+        SavingsEvent.objects.filter(goal_session=session)
+        .order_by('-date')[:7]
+        .values_list('wish_credit', flat=True)
+    )
+    if not events:
+        return None
+
+    avg = sum(Decimal(str(e)) for e in events) / len(events)
+    if avg <= 0:
+        return None
+
+    remaining = max(Decimal(str(session.target_amount)) - Decimal(str(session.accumulated)), Decimal('0'))
+    import math
+    return math.ceil(float(remaining / avg))
