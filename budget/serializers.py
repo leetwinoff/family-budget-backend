@@ -246,7 +246,8 @@ class WishItemSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'created_by', 'name', 'description', 'link',
             'price', 'currency', 'image_url',
-            'status', 'sort_order', 'fulfilled_at', 'created_at', 'updated_at',
+            'status', 'sort_order', 'fulfilled_at', 'fulfilled_by', 'self_fulfilled',
+            'created_at', 'updated_at',
         ]
 
 

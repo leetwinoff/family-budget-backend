@@ -153,6 +153,8 @@ class WishItem(models.Model):
     queue_position = models.IntegerField(null=True, blank=True)
     goal_ready = models.BooleanField(default=False)
     fulfilled_at = models.DateTimeField(null=True, blank=True)
+    fulfilled_by = models.BigIntegerField(null=True, blank=True)
+    self_fulfilled = models.BooleanField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

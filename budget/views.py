@@ -858,12 +858,18 @@ class WishFulfillView(APIView):
             return Response({'detail': 'Not found.'}, status=404)
 
         from django.utils import timezone
+        user_id = request.telegram_data.get('user', {}).get('id')
         if wish.status == WishItem.STATUS_ACTIVE:
+            self_fulfilled = request.data.get('self_fulfilled')
             wish.status = WishItem.STATUS_FULFILLED
             wish.fulfilled_at = timezone.now()
+            wish.fulfilled_by = user_id
+            wish.self_fulfilled = self_fulfilled if self_fulfilled is not None else None
         else:
             wish.status = WishItem.STATUS_ACTIVE
             wish.fulfilled_at = None
+            wish.fulfilled_by = None
+            wish.self_fulfilled = None
         wish.save()
         return Response(WishItemSerializer(wish).data)
 
