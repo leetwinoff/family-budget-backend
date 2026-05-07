@@ -2,7 +2,7 @@ from datetime import date, timedelta
 from decimal import Decimal
 
 from django.conf import settings
-from django.db.models import Sum, Q
+from django.db.models import Sum, Q, Max
 from django.utils import timezone
 from rest_framework.permissions import BasePermission
 from rest_framework.response import Response
@@ -961,6 +961,37 @@ class BotInviteJoinView(APIView):
             'status': 'joined',
             'budget_chat_id': invite.budget.chat_id,
         })
+
+
+class BotAddWishView(APIView):
+    permission_classes = [_BotTokenPermission]
+
+    def post(self, request):
+        chat_id = request.data.get('chat_id')
+        user_id = request.data.get('user_id')
+        name = request.data.get('name', '').strip()
+
+        if not chat_id or not user_id or not name:
+            return Response({'error': 'chat_id, user_id, and name are required'}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            budget = Budget.objects.get(chat_id=int(chat_id))
+        except Budget.DoesNotExist:
+            return Response({'error': 'Budget not found for this chat'}, status=status.HTTP_404_NOT_FOUND)
+
+        max_order = budget.wishes.aggregate(m=Max('sort_order'))['m'] or 0
+        wish = WishItem.objects.create(
+            budget=budget,
+            created_by=int(user_id),
+            name=name,
+            description=request.data.get('description', ''),
+            link=request.data.get('link', ''),
+            price=request.data.get('price') or None,
+            currency=request.data.get('currency', ''),
+            image_url=request.data.get('image_url', ''),
+            sort_order=max_order + 1,
+        )
+        return Response(WishItemSerializer(wish).data, status=status.HTTP_201_CREATED)
 
 
 # ---------------------------------------------------------------------------

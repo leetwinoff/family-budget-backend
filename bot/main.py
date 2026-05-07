@@ -7,13 +7,13 @@ import os
 import sys
 
 from dotenv import load_dotenv
-from telegram.ext import Application, CommandHandler, ChatMemberHandler
+from telegram.ext import Application, CommandHandler, ChatMemberHandler, MessageHandler, filters
 
 # Allow running from the backend/ directory without installing the package
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 load_dotenv()
 
-from bot.handlers import cmd_start, cmd_share, on_bot_added  # noqa: E402
+from bot.handlers import cmd_start, cmd_share, on_bot_added, on_wish_url  # noqa: E402
 
 logging.basicConfig(
     format='%(asctime)s | %(levelname)s | %(name)s | %(message)s',
@@ -41,6 +41,12 @@ def main() -> None:
 
     # Bot added to / removed from a chat
     app.add_handler(ChatMemberHandler(on_bot_added, ChatMemberHandler.MY_CHAT_MEMBER))
+
+    # Wish URL parsing — any group message containing a URL
+    app.add_handler(MessageHandler(
+        filters.ChatType.GROUPS & (filters.Entity('url') | filters.Entity('text_link')),
+        on_wish_url,
+    ))
 
     logger.info('Bot is running...')
     app.run_polling(allowed_updates=['message', 'my_chat_member'])

@@ -25,6 +25,7 @@ urlpatterns = [
     # Bot-internal endpoints (X-Bot-Token auth)
     path('bot/invite',                views.BotInviteCreateView.as_view(),  name='bot-invite'),
     path('bot/join',                  views.BotInviteJoinView.as_view(),    name='bot-join'),
+    path('bot/wish',                  views.BotAddWishView.as_view(),       name='bot-wish'),
     # Goal engine (Phase 1)
     path('goal/status',               views.GoalStatusView.as_view(),            name='goal-status'),
     path('goal/sessions',             views.GoalSessionListView.as_view(),        name='goal-sessions'),
